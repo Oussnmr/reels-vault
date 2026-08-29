@@ -2,8 +2,6 @@
 """Cheap local smoke tests for deterministic Reels Vault pieces.
 
 No Instagram login, download, Whisper model, or network access is required.
-The goal is to catch packaging/regression mistakes before spending time on a
-real 5-10 Reel test.
 """
 from __future__ import annotations
 
@@ -13,6 +11,8 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+
+from vault import prune_processed_inbox
 
 ROOT = Path(__file__).resolve().parent
 
@@ -28,19 +28,19 @@ def assert_ok(result: subprocess.CompletedProcess[str], label: str) -> None:
 
 def main() -> int:
     checks = 0
-    with tempfile.TemporaryDirectory(prefix="reels-vault-smoke-") as tmp:
-        tmp = Path(tmp)
+    with tempfile.TemporaryDirectory(prefix="reels-vault-smoke-") as tmp_dir:
+        tmp = Path(tmp_dir)
 
         # 1) Instagram ZIP import + normalization + de-duplication.
         export_zip = tmp / "instagram.zip"
-        with zipfile.ZipFile(export_zip, "w") as z:
-            z.writestr(
+        with zipfile.ZipFile(export_zip, "w") as archive:
+            archive.writestr(
                 "your_instagram_activity/saved/saved_posts.html",
                 '<a href="https://www.instagram.com/reel/ABC123/?utm_source=x">A</a>\n'
                 '<a href="https://instagram.com/reel/ABC123/">duplicate</a>\n'
                 '<a href="https://www.instagram.com/p/POST456/?igsh=x">B</a>',
             )
-            z.writestr(
+            archive.writestr(
                 "your_instagram_activity/saved/saved_collections.html",
                 '<a href="https://www.instagram.com/reel/XYZ789/">C</a>',
             )
@@ -56,7 +56,7 @@ def main() -> int:
         ], imported
         checks += 1
 
-        # 2) Build a Vault from one representative raw Markdown record.
+        # 2) Build all deterministic Vault outputs.
         vault = tmp / "Vault"
         raw = vault / "raw"
         raw.mkdir(parents=True)
@@ -74,14 +74,30 @@ def main() -> int:
         assert "demo_creator" in compact and "ABC123" in compact
         checks += 1
 
-        # 3) Launcher parser/help remains usable without doing network work.
+        # 3) --clear must never lose failed or unattempted Dropbox URLs.
+        ok = "https://www.instagram.com/reel/OK123/"
+        failed = "https://www.instagram.com/reel/FAIL456/"
+        untouched = "https://www.instagram.com/reel/LATER789/"
+        inbox = tmp / "inbox.txt"
+        original = f"{ok}\n{failed}\n{untouched}\n"
+        inbox.write_text(original, encoding="utf-8")
+        (vault / "journal.json").write_text(
+            json.dumps({ok: {"statut": "ok"}, failed: {"statut": "echec"}}),
+            encoding="utf-8",
+        )
+        processed, pending = prune_processed_inbox(inbox, original, vault)
+        assert (processed, pending) == (1, 2)
+        assert inbox.read_text(encoding="utf-8") == f"{failed}\n{untouched}\n"
+        checks += 1
+
+        # 4) Launcher parser/help remains usable without network work.
         result = run([sys.executable, str(ROOT / "vault.py"), "--help"])
         assert_ok(result, "vault.py --help")
-        assert "doctor" in result.stdout and "import" in result.stdout
+        assert all(word in result.stdout for word in ("doctor", "import", "inbox", "test"))
         checks += 1
 
     print(f"SMOKE TEST OK — {checks} groupes de vérifications réussis.")
-    print("Étape suivante : `python vault.py doctor`, puis un vrai import avec `--limit 5` ou `--limit 10`.")
+    print("Étape suivante : `python vault.py doctor`, puis un vrai test avec `--limit 5`.")
     return 0
 
 
