@@ -10,16 +10,15 @@ Examples:
   python vault.py add "https://www.instagram.com/reel/.../"
   python vault.py rebuild
 
-The launcher delegates the heavy lifting to the existing project scripts:
-- import_instagram.py: parse/deduplicate an Instagram export
-- ingest.py: download/transcribe saved posts
-- build_vault.py: rebuild the local search interface
+The launcher delegates the heavy lifting to the existing project scripts and,
+on Windows, mirrors the compact ChatGPT index into OneDrive automatically.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -53,11 +52,56 @@ def ingest_file(source: Path, vault: Path, cookies: str, limit: int = 0, model: 
     run_step("Ingestion et transcription", ingest_cmd)
 
 
-def rebuild(vault: Path) -> None:
+def find_onedrive_root() -> Path | None:
+    """Return the locally synced OneDrive root when available."""
+    for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        raw = os.environ.get(name)
+        if raw:
+            path = Path(raw).expanduser()
+            if path.exists():
+                return path
+    return None
+
+
+def sync_onedrive(vault: Path, quiet_if_missing: bool = True) -> bool:
+    """Mirror compact Vault outputs into OneDrive/Reels Vault.
+
+    This uses the normal local OneDrive sync client: no API, token or paid
+    service is involved. Missing OneDrive is non-fatal by default so ingestion
+    still succeeds on machines where OneDrive has not been configured yet.
+    """
+    root = find_onedrive_root()
+    if root is None:
+        if not quiet_if_missing:
+            print("OneDrive introuvable. Ouvre/configure OneDrive sur Windows puis relance la synchronisation.")
+        else:
+            print("OneDrive non détecté : synchronisation ignorée pour cette exécution.")
+        return False
+
+    source_md = vault / "Vault Instagram.md"
+    if not source_md.exists():
+        print(f"Index ChatGPT introuvable : {source_md}")
+        return False
+
+    destination = root / "Reels Vault"
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_md, destination / "Vault Instagram.md")
+
+    source_json = vault / "vault_data.json"
+    if source_json.exists():
+        shutil.copy2(source_json, destination / "vault_data.json")
+
+    print(f"OneDrive synchronisé : {destination / 'Vault Instagram.md'}")
+    return True
+
+
+def rebuild(vault: Path, sync: bool = True) -> None:
     run_step(
         "Reconstruction de l'interface de recherche",
         [sys.executable, str(ROOT / "build_vault.py"), "--vault", str(vault)],
     )
+    if sync:
+        sync_onedrive(vault)
 
 
 def cmd_import(args: argparse.Namespace) -> int:
@@ -72,7 +116,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     )
 
     ingest_file(clean_list, vault, args.cookies, args.limit, args.model)
-    rebuild(vault)
+    rebuild(vault, sync=not args.no_sync)
 
     html = vault / "vault.html"
     print("\nTerminé.")
@@ -105,7 +149,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         return 0
 
     ingest_file(inbox, vault, args.cookies, args.limit, args.model)
-    rebuild(vault)
+    rebuild(vault, sync=not args.no_sync)
 
     if args.clear:
         archive_dir = vault / "inbox_archive"
@@ -134,15 +178,28 @@ def cmd_add(args: argparse.Namespace) -> int:
             handle.write(args.url.strip() + "\n")
 
     ingest_file(inbox, vault, args.cookies, 0, args.model)
-    rebuild(vault)
+    rebuild(vault, sync=not args.no_sync)
     print(f"Ajout terminé : {args.url}")
     return 0
 
 
 def cmd_rebuild(args: argparse.Namespace) -> int:
     vault = Path(args.vault).expanduser().resolve()
-    rebuild(vault)
+    rebuild(vault, sync=not args.no_sync)
     return 0
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    vault = Path(args.vault).expanduser().resolve()
+    return 0 if sync_onedrive(vault, quiet_if_missing=False) else 1
+
+
+def add_sync_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="ne pas copier automatiquement l'index compact vers OneDrive",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--cookies", default="firefox", help="navigateur ou fichier cookies.txt")
     p_import.add_argument("--limit", type=int, default=0, help="limiter le nombre d'éléments à traiter")
     p_import.add_argument("--model", default="small", help="modèle Whisper")
+    add_sync_flag(p_import)
     p_import.set_defaults(func=cmd_import)
 
     p_inbox = sub.add_parser("inbox", help="Traiter un fichier inbox alimenté depuis l'iPhone")
@@ -168,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="archiver puis vider inbox.txt après un traitement réussi",
     )
+    add_sync_flag(p_inbox)
     p_inbox.set_defaults(func=cmd_inbox)
 
     p_add = sub.add_parser("add", help="Ajouter immédiatement une URL au Vault")
@@ -175,11 +234,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--vault", default=str(DEFAULT_VAULT), help="dossier du Vault")
     p_add.add_argument("--cookies", default="firefox", help="navigateur ou fichier cookies.txt")
     p_add.add_argument("--model", default="small", help="modèle Whisper")
+    add_sync_flag(p_add)
     p_add.set_defaults(func=cmd_add)
 
-    p_rebuild = sub.add_parser("rebuild", help="Régénérer uniquement la page de recherche")
+    p_rebuild = sub.add_parser("rebuild", help="Régénérer la page de recherche et synchroniser OneDrive")
     p_rebuild.add_argument("--vault", default=str(DEFAULT_VAULT), help="dossier du Vault")
+    add_sync_flag(p_rebuild)
     p_rebuild.set_defaults(func=cmd_rebuild)
+
+    p_sync = sub.add_parser("sync", help="Synchroniser uniquement l'index compact vers OneDrive")
+    p_sync.add_argument("--vault", default=str(DEFAULT_VAULT), help="dossier du Vault")
+    p_sync.set_defaults(func=cmd_sync)
 
     return parser
 
