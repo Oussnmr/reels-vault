@@ -9,6 +9,8 @@ Examples:
   python vault.py inbox --file "C:\\...\\inbox.txt"
   python vault.py add "https://www.instagram.com/reel/.../"
   python vault.py rebuild
+  python vault.py sync
+  python vault.py doctor
 
 The launcher delegates the heavy lifting to the existing project scripts and,
 on Windows, mirrors the compact ChatGPT index into OneDrive automatically.
@@ -194,6 +196,39 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if sync_onedrive(vault, quiet_if_missing=False) else 1
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Run the Windows diagnostic through the same simple CLI entry point."""
+    script = ROOT / "diagnose.ps1"
+    if not script.exists():
+        print(f"Diagnostic introuvable : {script}")
+        return 1
+    if os.name != "nt":
+        print("La commande doctor est actuellement prévue pour Windows.")
+        return 1
+
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        print("PowerShell introuvable.")
+        return 1
+
+    command = [
+        powershell,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-VaultPath",
+        str(Path(args.vault).expanduser().resolve()),
+    ]
+    if args.inbox:
+        command += ["-InboxPath", str(Path(args.inbox).expanduser().resolve())]
+
+    print("\n==> Diagnostic Reels Vault")
+    result = subprocess.run(command)
+    return result.returncode
+
+
 def add_sync_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-sync",
@@ -245,6 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync = sub.add_parser("sync", help="Synchroniser uniquement l'index compact vers OneDrive")
     p_sync.add_argument("--vault", default=str(DEFAULT_VAULT), help="dossier du Vault")
     p_sync.set_defaults(func=cmd_sync)
+
+    p_doctor = sub.add_parser("doctor", help="Vérifier automatiquement l'installation Windows")
+    p_doctor.add_argument("--vault", default=str(DEFAULT_VAULT), help="dossier du Vault")
+    p_doctor.add_argument("--inbox", help="chemin optionnel vers inbox.txt à vérifier")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     return parser
 
