@@ -1,30 +1,96 @@
 # Prochaine session Work — plan d'exécution optimisé
 
-Objectif : utiliser le quota Work uniquement pour l'implémentation et les tests qui justifient un agent de code.
+Objectif : utiliser le quota Work uniquement pour les tâches qui bénéficient réellement d'un agent de code : exécution réelle, débogage Windows, robustesse de l'ingestion et tests de régression.
 
-## État déjà préparé
+## Architecture désormais retenue
 
-La branche `chatgpt-foundation` contient :
+Flux quotidien cible :
 
-- `import_instagram.py` — lit directement un export ZIP Meta et produit une liste Instagram propre et dédupliquée ;
-- `vault.py` — point d'entrée unique (`import` / `rebuild`) ;
-- `build_vault.py` — génère l'interface locale de recherche ;
-- `setup_windows.ps1` — installation Windows simplifiée ;
-- `requirements.txt` et `.gitignore` ;
-- documentation d'architecture et tests de base.
+1. iPhone / Instagram → **Partager → Envoyer au Vault** ;
+2. le raccourci ajoute l'URL dans `Dropbox/Reels Vault/Inbox/inbox.txt` ;
+3. Dropbox synchronise le fichier sur Windows ;
+4. la tâche Windows lance `vault.py inbox --clear` ;
+5. le PC télécharge/transcrit/indexe localement ;
+6. `Vault Instagram.md` et `vault_data.json` sont synchronisés vers `OneDrive/Reels Vault/` ;
+7. ChatGPT sert d'interface principale de consultation ; `vault.html` reste une interface locale de secours.
 
-## Bloc 1 — robustesse de l'ingestion
+Le raccourci iPhone + Dropbox est déjà validé : les URLs sont ajoutées correctement dans `inbox.txt`.
 
-1. Tester `vault.py import <zip> --limit 10` sur Windows 11.
-2. Corriger les problèmes de chemins Windows et d'encodage.
-3. Vérifier Firefox + cookies Instagram avec `yt-dlp`.
-4. Vérifier les cas vidéo, Reel supprimé, post/carrousel et lien inaccessible.
-5. Ne jamais marquer un élément comme réussi si aucun contenu utile n'a été récupéré.
-6. Produire un résumé de fin clair : réussites, échecs, raisons, éléments à retenter.
+## État déjà préparé sur `chatgpt-foundation`
 
-## Bloc 2 — format structuré durable
+- `import_instagram.py` — import ZIP Meta et déduplication ;
+- `vault.py` — commandes `import`, `inbox`, `add`, `rebuild`, `sync`, `doctor`, `test` ;
+- `build_vault.py` — `vault.html`, `vault_data.json`, `Vault Instagram.md` ;
+- `setup_windows.ps1` — installation Windows ;
+- `install_windows_automation.ps1` — tâche planifiée Windows ;
+- `diagnose.ps1` — diagnostic environnement ;
+- `smoke_test.py` — test local gratuit ;
+- synchronisation automatique des index vers OneDrive ;
+- documentation iPhone mise à jour pour Dropbox ;
+- `.gitignore` et `requirements.txt`.
 
-Conserver la fiche Markdown brute, mais ajouter un enregistrement JSON par élément avec au minimum :
+## Avant d'utiliser Work — à faire manuellement sur le PC
+
+Ces étapes ne justifient pas de consommer du quota Work :
+
+1. Installer Dropbox pour Windows et vérifier que `inbox.txt` se synchronise.
+2. Installer/ouvrir OneDrive pour Windows.
+3. Cloner ou mettre à jour la branche `chatgpt-foundation`.
+4. Exécuter :
+
+```powershell
+.\setup_windows.ps1
+python vault.py test
+python vault.py doctor --inbox "CHEMIN_DROPBOX\Reels Vault\Inbox\inbox.txt"
+```
+
+5. Copier/coller ici les sorties si une erreur apparaît.
+
+Tant que `test` et `doctor` ne sont pas propres, ne pas utiliser Work pour l'import massif.
+
+## Session Work — Bloc 1 PRIORITAIRE : essai réel très petit
+
+Lancer uniquement 5 éléments :
+
+```powershell
+python vault.py import "EXPORT_INSTAGRAM.zip" --limit 5
+```
+
+ou traiter quelques URLs présentes dans Dropbox :
+
+```powershell
+python vault.py inbox --file "CHEMIN_DROPBOX\Reels Vault\Inbox\inbox.txt" --limit 5
+```
+
+Pendant cette étape, Work doit uniquement :
+
+1. observer les erreurs réelles ;
+2. corriger les chemins Windows / encodages ;
+3. vérifier Firefox + cookies Instagram avec `yt-dlp` ;
+4. vérifier FFmpeg ;
+5. vérifier faster-whisper sur CPU ;
+6. vérifier Reel vidéo + post/carrousel ;
+7. vérifier contenu supprimé / privé / inaccessible ;
+8. vérifier que les erreurs restent retryables ;
+9. vérifier la reconstruction et la synchro OneDrive.
+
+Ne pas lancer 838 éléments tant que ce bloc n'est pas stable.
+
+## Session Work — Bloc 2 : rendre l'ingestion robuste
+
+Une fois l'essai de 5 réussi :
+
+- ne jamais marquer `ok` sans contenu utile ;
+- journaliser une raison d'échec exploitable ;
+- distinguer supprimé / privé / cookies / réseau / téléchargement / transcription ;
+- conserver les échecs pour retry ;
+- rendre les reprises après interruption réellement idempotentes ;
+- produire un résumé final : réussites, échecs, raisons, à retenter ;
+- éviter de recharger Whisper inutilement quand aucune vidéo n'est à transcrire.
+
+## Session Work — Bloc 3 : modèle de données durable
+
+Faire évoluer le format structuré sans casser les fiches existantes. Champs minimum :
 
 - `id`
 - `source_url`
@@ -35,11 +101,12 @@ Conserver la fiche Markdown brute, mais ajouter un enregistrement JSON par élé
 - `description`
 - `transcript`
 - `images`
-- `saved_at` si disponible
+- `saved_at`
 - `processed_at`
 - `status`
+- `error_reason`
 
-Prévoir des champs enrichis optionnels :
+Champs enrichis optionnels, uniquement si on décide plus tard d'ajouter une couche IA :
 
 - `summary`
 - `themes`
@@ -48,67 +115,71 @@ Prévoir des champs enrichis optionnels :
 - `price_mentions`
 - `language`
 
-Le pipeline doit fonctionner même si ces champs IA sont absents.
+Le pipeline principal doit rester 100 % fonctionnel sans API IA payante.
 
-## Bloc 3 — interface locale
+## Session Work — Bloc 4 : recherche ChatGPT / index compact
 
-Améliorer `build_vault.py` et `vault.html` :
+Valider que `Vault Instagram.md` reste compact et utile pour ChatGPT :
 
-- recherche instantanée ;
-- filtres par auteur, type et thème ;
-- compteur de résultats ;
-- cartes compactes ;
-- lien direct vers le Reel ;
-- état "contenu pauvre / transcription absente" visible ;
-- fonctionnement 100 % local sans API ;
-- bonne utilisation sur mobile et desktop.
+- une entrée concise par élément ;
+- titre / auteur / type / date / URL ;
+- description ou transcription utile tronquée intelligemment ;
+- éviter les répétitions ;
+- conserver `vault_data.json` comme source structurée complète ;
+- garder `vault.html` comme interface locale de secours.
 
-## Bloc 4 — traitement incrémental quotidien
+Le but est de limiter la quantité de contexte/tokens nécessaire côté ChatGPT.
 
-Ajouter une commande :
+## Session Work — Bloc 5 : automatisation réelle
 
-```bash
-python vault.py inbox
+Une fois le traitement manuel validé :
+
+```powershell
+.\install_windows_automation.ps1 -InboxPath "CHEMIN_DROPBOX\Reels Vault\Inbox\inbox.txt"
 ```
 
-Elle doit :
+Puis vérifier :
 
-1. lire un fichier `inbox.txt` contenant des URLs partagées depuis l'iPhone ;
-2. traiter uniquement les URLs nouvelles ;
-3. reconstruire l'interface ;
-4. conserver les échecs pour une nouvelle tentative ;
-5. être idempotente.
+- tâche `Reels Vault Inbox` ;
+- exécution avec PC sur batterie ;
+- `StartWhenAvailable` ;
+- pas de double exécution ;
+- logs dans `~/Vault/logs/inbox-task.log` ;
+- inbox vidée uniquement après traitement réussi ;
+- archive conservée ;
+- OneDrive mis à jour après traitement.
 
-## Bloc 5 — automatisation Windows/iPhone
+## Session Work — Bloc 6 : montée en charge
 
-Préparer une installation simple :
+Progression recommandée :
 
-- raccourci iPhone « Envoyer au Vault » ;
-- fichier inbox synchronisé via iCloud Drive ;
-- tâche Windows `Vault Inbox` ;
-- exécution au démarrage si l'heure planifiée a été manquée ;
-- aucun besoin d'ouvrir GitHub ou un terminal au quotidien.
+1. 5 éléments ;
+2. 20 éléments ;
+3. 50 éléments ;
+4. seulement ensuite l'import complet.
 
-## Bloc 6 — tests et validation
+À chaque palier, vérifier : temps moyen, RAM, espace disque, erreurs et qualité des transcriptions.
 
-Créer/compléter des tests pour :
+## Ce qu'il ne faut PAS dépenser du quota Work à faire
 
-- déduplication ;
-- normalisation URL ;
-- reprise après interruption ;
-- journal des erreurs ;
-- génération de l'interface ;
-- import d'un faux ZIP Meta ;
-- reconstruction incrémentale.
+- rédiger de la documentation ;
+- décider de l'architecture ;
+- écrire des checklists ;
+- expliquer Raccourcis iPhone ;
+- petits changements de configuration ;
+- examiner des sorties/logs simples que Chat normal peut analyser ;
+- lancer directement l'import massif.
 
-Terminer par un essai réel sur 10 éléments avant tout import massif.
+Ces tâches doivent rester dans Chat normal autant que possible.
 
-## Critère de réussite utilisateur
+## Critère de réussite final
 
-Une fois installé, l'usage normal doit être :
+L'usage quotidien doit être :
 
-1. Instagram → Partager → Envoyer au Vault.
-2. Le PC traite automatiquement l'élément.
-3. L'utilisateur ouvre `vault.html` et recherche ce qu'il avait sauvegardé.
+1. Instagram → **Partager → Envoyer au Vault**.
+2. Rien d'autre à faire sur l'iPhone.
+3. Le PC traite automatiquement quand il est disponible.
+4. OneDrive contient toujours un index à jour.
+5. ChatGPT peut servir d'interface principale pour retrouver les sauvegardes.
 
-Aucune manipulation GitHub, Python ou PowerShell ne doit être requise au quotidien.
+Aucune manipulation GitHub, Python ou PowerShell ne doit être requise au quotidien après l'installation initiale.
