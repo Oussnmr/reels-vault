@@ -2,61 +2,76 @@
 
 ## Objectif
 
-Transformer des Reels/posts sauvegardés en une mémoire personnelle consultable, avec le moins d'actions manuelles possible.
+Transformer les Reels/posts sauvegardés en une mémoire personnelle consultable avec le moins d'actions manuelles possible, sans API IA payante.
 
-Usage quotidien visé :
+## Usage quotidien visé
 
-1. Depuis Instagram/TikTok : **Partager → Envoyer au Vault**.
-2. Le lien arrive dans une inbox.
-3. Le PC traite automatiquement les nouveaux liens.
-4. Le contenu est téléchargé/transcrit localement.
-5. Une fiche structurée est générée et ajoutée à l'index.
-6. L'interface locale est régénérée.
-7. L'utilisateur recherche ensuite en langage naturel ou via filtres.
-
-## Principes de conception
-
-- **Local-first** : audio, images, transcriptions et index restent sur la machine par défaut.
-- **Idempotent** : un même lien ne doit jamais être retraité inutilement.
-- **Reprise après interruption** : journalisation systématique.
-- **IA seulement là où elle apporte de la valeur** : téléchargement, transcription et extraction technique doivent rester locaux.
-- **Coût/quota minimal** : ne jamais relire toutes les transcriptions à chaque requête.
-- **Données structurées** : conserver les champs utiles séparément du texte libre.
-- **Interface simple** : aucune interaction quotidienne avec GitHub ou PowerShell une fois installé.
-
-## Pipeline cible
+1. Sur l'iPhone : Instagram → **Partager → Envoyer à Vault**.
+2. Le raccourci ajoute l'URL dans `Dropbox/Reels Vault/Inbox/inbox.txt`.
+3. Dropbox synchronise ce petit fichier vers Windows.
+4. Une tâche planifiée lance `python vault.py inbox --clear`.
+5. Le PC télécharge/transcrit localement le contenu.
+6. Le Vault est reconstruit.
+7. L'index compact est copié dans `OneDrive/Reels Vault/`.
+8. ChatGPT peut utiliser cet index comme source lorsque l'accès OneDrive approprié est disponible.
 
 ```text
-Instagram / TikTok
+Instagram sur iPhone
         ↓
-Raccourci iPhone
+Raccourci iOS « Envoyer à Vault »
         ↓
-inbox.txt
+Dropbox / Reels Vault / Inbox / inbox.txt
+        ↓
+Windows Task Scheduler
+        ↓
+vault.py inbox
         ↓
 ingest.py
-        ├── métadonnées yt-dlp
-        ├── audio
-        ├── transcription faster-whisper
-        ├── captures vidéo / images carrousel
-        └── raw/*.md
+ ├─ yt-dlp / gallery-dl
+ ├─ faster-whisper local
+ ├─ captures/images
+ ├─ raw/*.md
+ └─ journal.json
         ↓
-Enrichissement / structuration
-        ├── résumé concret
-        ├── thèmes
-        ├── type de contenu
-        ├── lieux
-        ├── prix
-        ├── adresses
-        └── autres champs utiles
+build_vault.py
+ ├─ vault_data.json
+ ├─ vault.html
+ └─ Vault Instagram.md
         ↓
-data/index.json
+OneDrive / Reels Vault
         ↓
-Interface locale / recherche
+ChatGPT + interface locale de secours
 ```
 
-## Schéma de donnée visé
+## Principes
 
-Chaque élément devra pouvoir être représenté au minimum comme ceci :
+- **Capture mobile minimale** : le téléphone ne fait qu'ajouter une URL à un fichier texte.
+- **Local-first** : téléchargement, transcription et génération d'index se font sur le PC.
+- **Zéro API payante obligatoire** : le pipeline principal ne nécessite aucun crédit IA.
+- **Idempotence** : `journal.json` empêche de retraiter les URLs déjà réussies.
+- **Aucune perte d'URL** : avec `--clear`, seules les URLs marquées `ok` sont retirées de l'inbox ; les échecs et URLs non encore traitées restent pour une prochaine exécution.
+- **Reprise après interruption** : chaque URL est journalisée séparément.
+- **Sortie compacte pour ChatGPT** : `Vault Instagram.md` évite d'envoyer toutes les données brutes à chaque recherche.
+- **Interface locale de secours** : `vault.html` reste utilisable sans ChatGPT ni connexion cloud.
+
+## Données actuelles
+
+La couche brute est volontairement simple et robuste. Chaque fiche Markdown contient notamment :
+
+- URL source ;
+- plateforme ;
+- type vidéo/carrousel ;
+- auteur ;
+- date de traitement ;
+- description ;
+- transcription ;
+- références vers les images locales.
+
+`build_vault.py` transforme ensuite ces fiches en `vault_data.json` et en index Markdown compact.
+
+## Schéma enrichi futur
+
+Les champs suivants pourront être ajoutés sans rendre le pipeline dépendant d'une IA :
 
 ```json
 {
@@ -68,14 +83,7 @@ Chaque élément devra pouvoir être représenté au minimum comme ceci :
   "title": "...",
   "summary": "...",
   "topics": ["restaurant", "bruxelles", "japonais"],
-  "locations": [
-    {
-      "name": "...",
-      "city": "Bruxelles",
-      "country": "Belgique",
-      "address": "..."
-    }
-  ],
+  "locations": [{"name": "...", "city": "Bruxelles", "country": "Belgique"}],
   "prices": ["15-25 €"],
   "transcript": "...",
   "images": ["images/...jpg"],
@@ -83,36 +91,42 @@ Chaque élément devra pouvoir être représenté au minimum comme ceci :
 }
 ```
 
-Tous les champs spécialisés doivent rester optionnels afin de supporter aussi bien des restaurants que des voyages, recettes, conseils business, produits, tutoriels, etc.
+Tous les champs enrichis restent optionnels.
 
 ## Séparation des responsabilités
 
+### `import_instagram.py`
+Import initial d'un export Meta → liste propre et dédupliquée.
+
 ### `ingest.py`
-Responsable uniquement de l'acquisition : URL → contenu brut fiable.
+Acquisition fiable : URL → contenu brut local + journal d'état.
 
-### Enrichissement
-Responsable de transformer le brut en données courtes et structurées. Cette couche pourra évoluer indépendamment du téléchargement.
+### `build_vault.py`
+Génération déterministe et gratuite de l'index JSON, HTML et Markdown compact.
 
-### Index
-Une représentation compacte de tout le Vault. Les recherches courantes ne doivent pas nécessiter de relire les fichiers bruts.
+### `vault.py`
+Point d'entrée unique : import, inbox, add, rebuild, sync, doctor, test.
 
-### Interface
-Doit fonctionner localement, idéalement sans serveur et sans dépendance externe pour l'usage courant.
+### Dropbox
+Transport uniquement des nouvelles URLs depuis l'iPhone. Le volume est négligeable.
 
-## Priorités d'implémentation
+### OneDrive
+Sortie synchronisée destinée à la consultation, notamment depuis ChatGPT. Les vidéos/audio bruts n'ont pas besoin d'y être copiés.
 
-1. Stabiliser l'ingestion et la gestion des erreurs.
-2. Ajouter un format de donnée structuré stable.
-3. Générer automatiquement l'index.
-4. Générer une interface de recherche locale.
-5. Simplifier l'installation Windows.
-6. Ajouter l'inbox iPhone + tâche planifiée.
-7. Tester sur un petit échantillon réel avant import massif.
+## Validation avant import massif
+
+1. `python vault.py test`
+2. `python vault.py doctor --inbox "...\\Dropbox\\Reels Vault\\Inbox\\inbox.txt"`
+3. Test réel de 5 URLs.
+4. Corriger tout problème Windows/cookies/téléchargement.
+5. Test de 20 puis 50 URLs.
+6. Import complet seulement après validation.
+7. Activer ensuite la tâche planifiée permanente.
 
 ## Critère de réussite
 
-Le projet est considéré utilisable lorsque, après installation initiale, l'ajout d'un nouveau contenu ne demande pas plus que :
+Après l'installation initiale, l'ajout quotidien doit demander uniquement :
 
-**Partager → Envoyer au Vault**
+**Instagram → Partager → Envoyer à Vault**
 
-et que le contenu devient ensuite retrouvable sans manipulation technique supplémentaire.
+Aucune manipulation GitHub, Python ou PowerShell ne doit être requise au quotidien.
