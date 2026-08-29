@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build a zero-cost searchable Vault from raw Markdown files.
 
-This is the deterministic layer: no API and no AI model is required. It reads
-`raw/*.md`, extracts metadata/content, writes `vault_data.json`, and generates a
-single self-contained `vault.html` that can be opened locally in a browser.
+This deterministic layer uses no API and no AI model. It reads raw/*.md and
+writes three outputs:
+- vault_data.json: structured machine-readable data
+- vault.html: local searchable UI
+- Vault Instagram.md: compact ChatGPT-friendly index meant to be synced to OneDrive
 
 Later, an AI enrichment step can add better summaries/categories without
 changing the daily interface.
@@ -18,7 +20,6 @@ from collections import Counter
 from pathlib import Path
 
 FIELD_RE = re.compile(r"^([A-Za-z0-9_-]+):\s*(.*)$")
-SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
 def parse_markdown(path: Path) -> dict:
@@ -49,11 +50,7 @@ def parse_markdown(path: Path) -> dict:
     description = section("Description")
     transcription = section("Transcription audio")
     images_text = section("Images")
-    images = [
-        line[2:].strip()
-        for line in images_text.splitlines()
-        if line.strip().startswith("- ")
-    ]
+    images = [line[2:].strip() for line in images_text.splitlines() if line.strip().startswith("- ")]
 
     source = meta.get("source", "")
     platform = meta.get("plateforme", "")
@@ -80,6 +77,44 @@ def collect(raw_dir: Path) -> list[dict]:
     return [parse_markdown(p) for p in sorted(raw_dir.glob("*.md"))]
 
 
+def compact_text(value: str, limit: int = 700) -> str:
+    value = re.sub(r"\s+", " ", (value or "").strip())
+    if value in {"(vide)", "(pas d'audio exploitable)", "(aucune)"}:
+        return ""
+    return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+
+def render_markdown(items: list[dict]) -> str:
+    """Compact index optimized for retrieval by ChatGPT/OneDrive.
+
+    Prefer description, then transcription. Do not include image paths or the
+    redundant searchable field to keep context usage low.
+    """
+    lines = [
+        "# Vault Instagram",
+        "",
+        f"Nombre d'éléments : {len(items)}",
+        "",
+        "Index compact de contenus Instagram sauvegardés. Chaque entrée conserve le lien source.",
+        "",
+    ]
+    for item in items:
+        summary = compact_text(item.get("description", "")) or compact_text(item.get("transcription", ""))
+        lines.append(f"## {item.get('title') or item.get('id')}")
+        if item.get("author"):
+            lines.append(f"- Auteur : {item['author']}")
+        if item.get("genre"):
+            lines.append(f"- Type : {item['genre']}")
+        if item.get("date"):
+            lines.append(f"- Traité le : {item['date']}")
+        if item.get("source"):
+            lines.append(f"- Source : {item['source']}")
+        if summary:
+            lines.append(f"- Contenu : {summary}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_html(items: list[dict]) -> str:
     data = json.dumps(items, ensure_ascii=False).replace("</", "<\\/")
     stats = Counter(i.get("genre") or "autre" for i in items)
@@ -104,17 +139,25 @@ q.addEventListener('input',render);document.querySelectorAll('button[data-kind]'
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Génère vault_data.json et vault.html depuis raw/*.md")
+    p = argparse.ArgumentParser(description="Génère les sorties du Vault depuis raw/*.md")
     p.add_argument("--vault", default=str(Path.home() / "vault"))
     args = p.parse_args()
     vault = Path(args.vault).expanduser()
     raw = vault / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     items = collect(raw)
-    (vault / "vault_data.json").write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    (vault / "vault.html").write_text(render_html(items), encoding="utf-8")
+
+    json_path = vault / "vault_data.json"
+    html_path = vault / "vault.html"
+    md_path = vault / "Vault Instagram.md"
+
+    json_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    html_path.write_text(render_html(items), encoding="utf-8")
+    md_path.write_text(render_markdown(items), encoding="utf-8")
+
     print(f"Vault généré : {len(items)} éléments")
-    print(vault / "vault.html")
+    print(f"Interface : {html_path}")
+    print(f"Index ChatGPT : {md_path}")
     return 0
 
 if __name__ == "__main__":
