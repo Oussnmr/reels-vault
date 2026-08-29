@@ -11,6 +11,7 @@ Examples:
   python vault.py rebuild
   python vault.py sync
   python vault.py doctor
+  python vault.py test
 
 The launcher delegates the heavy lifting to the existing project scripts and,
 on Windows, mirrors the compact ChatGPT index into OneDrive automatically.
@@ -55,7 +56,6 @@ def ingest_file(source: Path, vault: Path, cookies: str, limit: int = 0, model: 
 
 
 def find_onedrive_root() -> Path | None:
-    """Return the locally synced OneDrive root when available."""
     for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
         raw = os.environ.get(name)
         if raw:
@@ -66,12 +66,6 @@ def find_onedrive_root() -> Path | None:
 
 
 def sync_onedrive(vault: Path, quiet_if_missing: bool = True) -> bool:
-    """Mirror compact Vault outputs into OneDrive/Reels Vault.
-
-    This uses the normal local OneDrive sync client: no API, token or paid
-    service is involved. Missing OneDrive is non-fatal by default so ingestion
-    still succeeds on machines where OneDrive has not been configured yet.
-    """
     root = find_onedrive_root()
     if root is None:
         if not quiet_if_missing:
@@ -116,14 +110,12 @@ def cmd_import(args: argparse.Namespace) -> int:
         "Préparation de l'export Instagram",
         [sys.executable, str(ROOT / "import_instagram.py"), str(source), "-o", str(clean_list)],
     )
-
     ingest_file(clean_list, vault, args.cookies, args.limit, args.model)
     rebuild(vault, sync=not args.no_sync)
 
-    html = vault / "vault.html"
     print("\nTerminé.")
     print(f"Vault : {vault}")
-    print(f"Interface : {html}")
+    print(f"Interface : {vault / 'vault.html'}")
     print("Astuce : commence avec --limit 10 pour valider le pipeline avant l'import complet.")
     return 0
 
@@ -131,9 +123,7 @@ def cmd_import(args: argparse.Namespace) -> int:
 def resolve_inbox(value: str | None) -> Path:
     raw = value or os.environ.get("VAULT_INBOX")
     if not raw:
-        raise SystemExit(
-            "Aucun fichier inbox configuré. Utilise --file CHEMIN ou définis la variable VAULT_INBOX."
-        )
+        raise SystemExit("Aucun fichier inbox configuré. Utilise --file CHEMIN ou définis la variable VAULT_INBOX.")
     path = Path(raw).expanduser().resolve()
     if not path.exists():
         raise SystemExit(f"Inbox introuvable : {path}")
@@ -144,7 +134,6 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     vault = Path(args.vault).expanduser().resolve()
     vault.mkdir(parents=True, exist_ok=True)
     inbox = resolve_inbox(args.file)
-
     before = inbox.read_text(encoding="utf-8", errors="ignore")
     if not before.strip():
         print("Inbox vide : rien à traiter.")
@@ -172,13 +161,11 @@ def cmd_add(args: argparse.Namespace) -> int:
     vault = Path(args.vault).expanduser().resolve()
     vault.mkdir(parents=True, exist_ok=True)
     inbox = vault / "manual_inbox.txt"
-
     existing = inbox.read_text(encoding="utf-8", errors="ignore") if inbox.exists() else ""
     urls = [line.strip() for line in existing.splitlines() if line.strip()]
     if args.url not in urls:
         with inbox.open("a", encoding="utf-8") as handle:
             handle.write(args.url.strip() + "\n")
-
     ingest_file(inbox, vault, args.cookies, 0, args.model)
     rebuild(vault, sync=not args.no_sync)
     print(f"Ajout terminé : {args.url}")
@@ -186,8 +173,7 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 
 def cmd_rebuild(args: argparse.Namespace) -> int:
-    vault = Path(args.vault).expanduser().resolve()
-    rebuild(vault, sync=not args.no_sync)
+    rebuild(Path(args.vault).expanduser().resolve(), sync=not args.no_sync)
     return 0
 
 
@@ -197,7 +183,6 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """Run the Windows diagnostic through the same simple CLI entry point."""
     script = ROOT / "diagnose.ps1"
     if not script.exists():
         print(f"Diagnostic introuvable : {script}")
@@ -205,36 +190,27 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if os.name != "nt":
         print("La commande doctor est actuellement prévue pour Windows.")
         return 1
-
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         print("PowerShell introuvable.")
         return 1
-
-    command = [
-        powershell,
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        "-VaultPath",
-        str(Path(args.vault).expanduser().resolve()),
-    ]
+    command = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-VaultPath", str(Path(args.vault).expanduser().resolve())]
     if args.inbox:
         command += ["-InboxPath", str(Path(args.inbox).expanduser().resolve())]
-
     print("\n==> Diagnostic Reels Vault")
-    result = subprocess.run(command)
-    return result.returncode
+    return subprocess.run(command).returncode
+
+
+def cmd_test(_args: argparse.Namespace) -> int:
+    script = ROOT / "smoke_test.py"
+    if not script.exists():
+        print(f"Test introuvable : {script}")
+        return 1
+    return subprocess.run([sys.executable, str(script)]).returncode
 
 
 def add_sync_flag(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--no-sync",
-        action="store_true",
-        help="ne pas copier automatiquement l'index compact vers OneDrive",
-    )
+    parser.add_argument("--no-sync", action="store_true", help="ne pas copier automatiquement l'index compact vers OneDrive")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -256,11 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inbox.add_argument("--cookies", default="firefox", help="navigateur ou fichier cookies.txt")
     p_inbox.add_argument("--limit", type=int, default=0, help="limiter le nombre d'éléments à traiter")
     p_inbox.add_argument("--model", default="small", help="modèle Whisper")
-    p_inbox.add_argument(
-        "--clear",
-        action="store_true",
-        help="archiver puis vider inbox.txt après un traitement réussi",
-    )
+    p_inbox.add_argument("--clear", action="store_true", help="archiver puis vider inbox.txt après un traitement réussi")
     add_sync_flag(p_inbox)
     p_inbox.set_defaults(func=cmd_inbox)
 
@@ -286,12 +258,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--inbox", help="chemin optionnel vers inbox.txt à vérifier")
     p_doctor.set_defaults(func=cmd_doctor)
 
+    p_test = sub.add_parser("test", help="Lancer les tests rapides sans Instagram ni réseau")
+    p_test.set_defaults(func=cmd_test)
+
     return parser
 
 
 def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     return args.func(args)
 
 
