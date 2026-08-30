@@ -72,6 +72,36 @@ def sync_onedrive(vault: Path, quiet_if_missing: bool = True) -> bool:
     return True
 
 
+def sync_github_index(vault: Path, quiet_if_missing: bool = True) -> bool:
+    """Publish only the compact indexes to an optional private Git repository."""
+    raw = os.environ.get("VAULT_INDEX_REPO")
+    if not raw:
+        if not quiet_if_missing:
+            print("Dépôt GitHub d'index non configuré : VAULT_INDEX_REPO absent.")
+        return False
+
+    index_repo = Path(raw).expanduser()
+    script = ROOT / "sync_github_index.ps1"
+    if not index_repo.exists() or not script.exists() or os.name != "nt":
+        print("Publication GitHub ignorée : dépôt ou script introuvable.")
+        return False
+
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        print("Publication GitHub ignorée : PowerShell introuvable.")
+        return False
+
+    print("\n==> Publication de l'index GitHub privé")
+    result = subprocess.run([
+        powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+        "-VaultPath", str(vault), "-IndexRepo", str(index_repo),
+    ])
+    if result.returncode != 0:
+        print("Publication GitHub en échec : l'index local reste disponible.")
+        return False
+    return True
+
+
 def rebuild(vault: Path, sync: bool = True) -> None:
     run_step(
         "Reconstruction de l'interface de recherche",
@@ -79,6 +109,7 @@ def rebuild(vault: Path, sync: bool = True) -> None:
     )
     if sync:
         sync_onedrive(vault)
+        sync_github_index(vault)
 
 
 def extract_urls(text: str) -> list[str]:
@@ -191,7 +222,9 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     vault = Path(args.vault).expanduser().resolve()
-    return 0 if sync_onedrive(vault, quiet_if_missing=False) else 1
+    onedrive_ok = sync_onedrive(vault, quiet_if_missing=False)
+    github_ok = sync_github_index(vault, quiet_if_missing=False)
+    return 0 if onedrive_ok or github_ok else 1
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:

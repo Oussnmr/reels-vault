@@ -114,13 +114,24 @@ def identifiant(lien):
 # ---------------------------------------------------------------- étapes
 
 def recuperer_metadonnees(lien, cookies):
-    commande = YTDLP + ["--dump-json", "--no-warnings", "--skip-download"]
+    commande = YTDLP + ["--dump-single-json", "--ignore-no-formats-error",
+                        "--no-warnings", "--skip-download"]
     commande += options_cookies(cookies)
     commande.append(lien)
     resultat = subprocess.run(commande, capture_output=True, text=True, timeout=120)
     if resultat.returncode != 0:
         raise RuntimeError((resultat.stderr or "yt-dlp a échoué").strip()[:300])
     return json.loads(resultat.stdout.splitlines()[0])
+
+
+def est_video(meta):
+    """Reconnaît une vidéo même si yt-dlp ne fournit plus sa durée."""
+    if meta.get("duration"):
+        return True
+    return any(
+        format_.get("vcodec") not in (None, "none")
+        for format_ in (meta.get("formats") or [])
+    )
 
 
 def telecharger_media(lien, dossier, nom, cookies):
@@ -130,18 +141,23 @@ def telecharger_media(lien, dossier, nom, cookies):
 
     base = YTDLP + ["--no-warnings", "--quiet"] + options_cookies(cookies)
 
-    subprocess.run(
+    audio_resultat = subprocess.run(
         base + ["-f", "bestaudio", "-x", "--audio-format", "m4a",
                 "-o", str(dossier / f"{nom}.%(ext)s"), lien],
-        capture_output=True, timeout=300,
+        capture_output=True, text=True, timeout=300,
     )
-    subprocess.run(
+    video_resultat = subprocess.run(
         base + ["-f", "worstvideo[height>=480]/worst",
                 "-o", str(video), lien],
-        capture_output=True, timeout=300,
+        capture_output=True, text=True, timeout=300,
     )
-    return (audio if audio.exists() else None,
-            video if video.exists() else None)
+    audio = audio if audio.exists() else None
+    video = video if video.exists() else None
+    if audio is None and video is None:
+        details = (audio_resultat.stderr or video_resultat.stderr or
+                   "yt-dlp n'a produit aucun fichier").strip()
+        raise RuntimeError(details[:300])
+    return audio, video
 
 
 def transcrire(audio, modele):
@@ -164,12 +180,35 @@ def telecharger_carrousel(lien, dossier_images, nom, cookies):
     commande = GALLERYDL + ["--write-metadata", "-D", str(cible)]
     commande += options_cookies(cookies)
     commande.append(lien)
-    subprocess.run(commande, capture_output=True, timeout=300)
+    resultat_gallery = subprocess.run(
+        commande, capture_output=True, text=True, timeout=300,
+    )
 
     images = sorted(
         p for p in cible.glob("*")
         if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
     )
+
+    # Les posts publics exposent encore leurs images à yt-dlp même quand
+    # l'API utilisée par gallery-dl redirige vers la page de connexion.
+    if not images:
+        commande_fallback = YTDLP + [
+            "--ignore-no-formats-error", "--skip-download", "--write-thumbnail",
+            "--no-warnings", "--quiet",
+        ] + options_cookies(cookies) + [
+            "-o", str(cible / f"{nom}_%(playlist_index)s.%(ext)s"), lien,
+        ]
+        resultat_fallback = subprocess.run(
+            commande_fallback, capture_output=True, text=True, timeout=300,
+        )
+        images = sorted(
+            p for p in cible.glob("*")
+            if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+        )
+        if not images:
+            details = (resultat_gallery.stderr or resultat_fallback.stderr or
+                       "aucune image produite").strip()
+            raise RuntimeError(f"téléchargement du carrousel impossible : {details[:240]}")
 
     legende = ""
     for fichier_meta in sorted(cible.glob("*.json")):
@@ -186,8 +225,18 @@ def telecharger_carrousel(lien, dossier_images, nom, cookies):
 
 def extraire_images(video, dossier_images, nom, duree):
     """Prend NB_IMAGES captures réparties dans la vidéo."""
-    if video is None or not duree:
+    if video is None:
         return []
+    if not duree:
+        resultat = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
+            capture_output=True, text=True, timeout=30,
+        )
+        try:
+            duree = float(resultat.stdout.strip())
+        except (TypeError, ValueError):
+            return []
     chemins = []
     for i in range(NB_IMAGES):
         instant = duree * (i + 1) / (NB_IMAGES + 1)
@@ -286,7 +335,7 @@ def main():
                 erreur_meta = str(e).replace("\n", " ")[:300]
 
             audio = video = None
-            if meta.get("duration"):
+            if est_video(meta):
                 genre = "video"
                 audio, video = telecharger_media(lien, dossier_temp, nom,
                                                  args.cookies)

@@ -1,7 +1,13 @@
 $ErrorActionPreference = 'Stop'
 Write-Host '=== Reels Vault - installation Windows ==='
 
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+function Test-PythonReady {
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $false }
+    python --version *> $null
+    return $LASTEXITCODE -eq 0
+}
+
+if (-not (Test-PythonReady)) {
     Write-Host 'Python absent. Installation via winget...'
     winget install --id Python.Python.3.12 -e
     Write-Host 'Ferme puis relance PowerShell, puis relance ce script.'
@@ -9,7 +15,9 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 }
 
 python -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw 'La mise à jour de pip a échoué.' }
 python -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw 'L installation des dépendances Python a échoué.' }
 
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Write-Host 'FFmpeg absent. Installation via winget...'

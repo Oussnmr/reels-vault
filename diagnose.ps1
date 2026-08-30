@@ -63,6 +63,7 @@ if ($InboxPath) {
         Pass "Inbox Dropbox/iPhone trouvée ($InboxPath)"
         try {
             $content = Get-Content -Raw -LiteralPath $InboxPath -ErrorAction Stop
+            if ($null -eq $content) { $content = '' }
             $urls = [regex]::Matches($content, 'https?://[^\s]+') | ForEach-Object { $_.Value }
             $supported = $urls | Where-Object { $_ -match '(instagram\.com|tiktok\.com)' }
             Pass "Inbox lisible ($($supported.Count) lien(s) Instagram/TikTok en attente)"

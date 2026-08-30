@@ -1,7 +1,8 @@
 param(
     [string]$InboxPath = '',
     [switch]$InstallAutomation,
-    [int]$IntervalMinutes = 30
+    [int]$IntervalMinutes = 30,
+    [string]$IndexRepo = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,7 +23,9 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 if (-not $InboxPath) {
     $candidates = @(
         (Join-Path $HOME 'Dropbox\Reels Vault\Inbox\inbox.txt'),
-        (Join-Path $HOME 'Dropbox (Personal)\Reels Vault\Inbox\inbox.txt')
+        (Join-Path $HOME 'Dropbox\Reel Vault\Inbox\inbox.txt'),
+        (Join-Path $HOME 'Dropbox (Personal)\Reels Vault\Inbox\inbox.txt'),
+        (Join-Path $HOME 'Dropbox (Personal)\Reel Vault\Inbox\inbox.txt')
     )
     $InboxPath = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
@@ -60,7 +63,7 @@ if ($doctorExit -eq 1) {
 if ($InstallAutomation) {
     Write-Host ''
     Write-Host '=== Installation de la tâche automatique ==='
-    & (Join-Path $repo 'install_windows_automation.ps1') -InboxPath $InboxPath -IntervalMinutes $IntervalMinutes
+    & (Join-Path $repo 'install_windows_automation.ps1') -InboxPath $InboxPath -IntervalMinutes $IntervalMinutes -IndexRepo $IndexRepo
 } else {
     Write-Host ''
     Write-Host 'Préparation terminée.'

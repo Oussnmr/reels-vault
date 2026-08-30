@@ -6,7 +6,9 @@ param(
 
     [string]$TaskName = 'Reels Vault Inbox',
 
-    [string]$VaultPath = (Join-Path $HOME 'Vault')
+    [string]$VaultPath = (Join-Path $HOME 'Vault'),
+
+    [string]$IndexRepo = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,15 +41,36 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 [Environment]::SetEnvironmentVariable('VAULT_INBOX', $inbox, 'User')
 $env:VAULT_INBOX = $inbox
 
+if ($IndexRepo) {
+    $indexRepoPath = (Resolve-Path -LiteralPath $IndexRepo).Path
+    if (-not (Test-Path -LiteralPath (Join-Path $indexRepoPath '.git'))) {
+        throw "IndexRepo n'est pas un dépôt Git : $indexRepoPath"
+    }
+    [Environment]::SetEnvironmentVariable('VAULT_INDEX_REPO', $indexRepoPath, 'User')
+    $env:VAULT_INDEX_REPO = $indexRepoPath
+    $indexRepoLine = "`$env:VAULT_INDEX_REPO = '$indexRepoPath'"
+} else {
+    $indexRepoLine = ''
+}
+
 $runner = Join-Path $VaultPath 'run_inbox.ps1'
 $logFile = Join-Path $logDir 'inbox-task.log'
 
 $runnerContent = @"
 `$ErrorActionPreference = 'Continue'
+`$env:PYTHONIOENCODING = 'utf-8'
+`$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding
+$indexRepoLine
 `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-Add-Content -LiteralPath '$logFile' -Value "`n=== `$timestamp ==="
-& '$pythonExe' '$vaultPy' inbox --file '$inbox' --vault '$VaultPath' --cookies firefox --clear *>> '$logFile'
-exit `$LASTEXITCODE
+Add-Content -LiteralPath '$logFile' -Value "`n=== `$timestamp ===" -Encoding UTF8
+if (Test-Path -LiteralPath '$VaultPath\.historical_import.running') {
+    Add-Content -LiteralPath '$logFile' -Value 'Import historique actif : inbox reportée au prochain passage.' -Encoding UTF8
+    exit 0
+}
+`$output = & '$pythonExe' '$vaultPy' inbox --file '$inbox' --vault '$VaultPath' --cookies firefox --clear 2>&1 | Out-String
+`$exitCode = `$LASTEXITCODE
+Add-Content -LiteralPath '$logFile' -Value `$output -Encoding UTF8
+exit `$exitCode
 "@
 Set-Content -LiteralPath $runner -Value $runnerContent -Encoding UTF8
 
