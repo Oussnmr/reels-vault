@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-MODEL = "qwen3-vl:4b"
+MODEL = "gemma3:4b"
 EMPTY = {"", "(vide)", "(pas d'audio exploitable)", "(aucune)"}
 
 
