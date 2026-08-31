@@ -23,6 +23,15 @@ def section(text: str, name: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def has_usable_transcript(value: str) -> bool:
+    """Avoid treating a stray word from Whisper as meaningful Reel context."""
+    value = re.sub(r"\s+", " ", value).strip()
+    if value.casefold() in EMPTY:
+        return False
+    words = re.findall(r"[A-Za-zÀ-ÿ0-9']+", value)
+    return len(words) >= 4 and len("".join(words)) >= 18
+
+
 def analyse(images: list[Path]) -> str:
     payload = {
         "model": MODEL,
@@ -68,7 +77,7 @@ def enrich(vault: Path) -> tuple[int, int]:
     enriched = skipped = 0
     for raw in sorted((vault / "raw").glob("*.md")):
         text = raw.read_text(encoding="utf-8", errors="ignore")
-        if section(text, "Transcription audio") not in EMPTY:
+        if has_usable_transcript(section(text, "Transcription audio")):
             skipped += 1
             continue
         if section(text, "Texte détecté à l'écran") not in {"", "(aucun texte détecté)"}:
