@@ -25,6 +25,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 # ---------------------------------------------------------------- configuration
 
@@ -194,6 +195,47 @@ def transcrire(audio, modele):
         return ""
     segments, _ = modele.transcribe(str(audio), vad_filter=True)
     return " ".join(s.text.strip() for s in segments).strip()
+
+
+def fallback_tiktok_oembed(lien, dossier_images, nom):
+    """Crée une fiche TikTok minimale lorsque le défi anti-bot bloque yt-dlp.
+
+    L'endpoint oEmbed de TikTok fournit un titre, l'auteur, l'URL canonique et
+    une miniature publique. La fiche reste donc retrouvable même sans l'audio.
+    """
+    endpoint = f"https://www.tiktok.com/oembed?url={quote(lien, safe='')}"
+    resultat = subprocess.run(
+        ["curl.exe", "--location", "--fail", "--silent", "--show-error", "--max-time", "30", endpoint],
+        capture_output=True, timeout=40,
+    )
+    if resultat.returncode:
+        raise RuntimeError((resultat.stderr.decode("utf-8", errors="ignore") or "oEmbed TikTok inaccessible").strip()[:300])
+    donnees = json.loads(resultat.stdout.decode("utf-8", errors="ignore"))
+    titre = (donnees.get("title") or "TikTok sans titre").strip()
+    auteur = (donnees.get("author_name") or "inconnu").strip()
+    canonique = ""
+    html_embed = donnees.get("html") or ""
+    match = re.search(r'cite=["\']([^"\']+)', html_embed)
+    if match:
+        canonique = match.group(1)
+
+    meta = {
+        "title": titre,
+        "uploader": auteur,
+        "description": "TikTok archivé via son aperçu public. "
+                       + (f"Lien canonique : {canonique}" if canonique else ""),
+    }
+    images = []
+    miniature = donnees.get("thumbnail_url")
+    if miniature:
+        sortie = dossier_images / f"{nom}_1.jpg"
+        image_resultat = subprocess.run(
+            ["curl.exe", "--location", "--fail", "--silent", "--show-error", "--max-time", "45", "-o", str(sortie), miniature],
+            capture_output=True, timeout=55,
+        )
+        if image_resultat.returncode == 0 and sortie.exists() and sortie.stat().st_size > 0:
+            images.append(sortie)
+    return meta, images
 
 
 def telecharger_carrousel(lien, dossier_images, nom, cookies):
@@ -399,9 +441,25 @@ def main():
             journal[lien] = {"statut": "ok", "fiche": f"{nom}.md"}
             reussites += 1
         except Exception as erreur:  # noqa: BLE001 — on continue quoi qu'il arrive
-            log(f"    échec : {erreur}")
-            journal[lien] = {"statut": "echec", "erreur": str(erreur)[:300]}
-            echecs += 1
+            if "tiktok" in lien.lower():
+                try:
+                    meta, images = fallback_tiktok_oembed(lien, dossier_images, nom)
+                    ecrire_fiche(
+                        dossier_raw, vault, nom, lien, meta,
+                        "(TikTok a bloqué le téléchargement audio ; aperçu public archivé.)",
+                        images, "video",
+                    )
+                    journal[lien] = {"statut": "ok", "fiche": f"{nom}.md", "mode": "oembed"}
+                    log("    TikTok bloqué par l'anti-bot : fiche d'aperçu public créée.")
+                    reussites += 1
+                except Exception as fallback_error:  # noqa: BLE001
+                    log(f"    échec : {erreur} | secours TikTok : {fallback_error}")
+                    journal[lien] = {"statut": "echec", "erreur": str(fallback_error)[:300]}
+                    echecs += 1
+            else:
+                log(f"    échec : {erreur}")
+                journal[lien] = {"statut": "echec", "erreur": str(erreur)[:300]}
+                echecs += 1
 
         sauver_journal(chemin_journal, journal)
         time.sleep(PAUSE_ENTRE_VIDEOS)
