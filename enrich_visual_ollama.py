@@ -32,6 +32,14 @@ def has_usable_transcript(value: str) -> bool:
     return len(words) >= 4 and len("".join(words)) >= 18
 
 
+def has_usable_visual_text(value: str) -> bool:
+    """Require enough OCR context before omitting an actual visual description."""
+    if value.strip().casefold() in {"", "(aucun texte détecté)"}:
+        return False
+    words = re.findall(r"[A-Za-zÀ-ÿ0-9']+", value)
+    return len(words) >= 8 and len("".join(words)) >= 45
+
+
 def analyse(images: list[Path]) -> str:
     payload = {
         "model": MODEL,
@@ -80,7 +88,7 @@ def enrich(vault: Path) -> tuple[int, int]:
         if has_usable_transcript(section(text, "Transcription audio")):
             skipped += 1
             continue
-        if section(text, "Texte détecté à l'écran") not in {"", "(aucun texte détecté)"}:
+        if has_usable_visual_text(section(text, "Texte détecté à l'écran")):
             skipped += 1
             continue
         if section(text, "Description visuelle"):
