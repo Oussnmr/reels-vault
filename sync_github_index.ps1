@@ -35,7 +35,11 @@ try {
     Copy-Item -LiteralPath $sourceJson -Destination (Join-Path $repo 'vault_data.json') -Force
     $destSearch = Join-Path $repo 'vault_search'
     New-Item -ItemType Directory -Force -Path $destSearch | Out-Null
-    Copy-Item -Path (Join-Path $sourceSearch '*') -Destination $destSearch -Force
+    $destDetails = Join-Path $destSearch 'details'
+    if (Test-Path -LiteralPath $destDetails) {
+        Remove-Item -LiteralPath $destDetails -Recurse -Force
+    }
+    Copy-Item -Path (Join-Path $sourceSearch '*') -Destination $destSearch -Force -Recurse
 
     git add -- 'Vault Instagram.md' 'vault_data.json' 'vault_search'
     if ($LASTEXITCODE -ne 0) { throw 'Impossible de préparer les index GitHub.' }
