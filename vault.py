@@ -109,6 +109,12 @@ def rebuild(vault: Path, sync: bool = True) -> None:
             "Lecture du texte affiché dans les Reels sans audio",
             [sys.executable, str(ocr_script), "--vault", str(vault)],
         )
+    vision_script = ROOT / "enrich_visual_ollama.py"
+    if vision_script.exists():
+        run_step(
+            "Analyse visuelle locale des Reels sans contexte textuel",
+            [sys.executable, str(vision_script), "--vault", str(vault)],
+        )
     run_step(
         "Reconstruction de l'interface de recherche",
         [sys.executable, str(ROOT / "build_vault.py"), "--vault", str(vault)],
