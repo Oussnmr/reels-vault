@@ -39,14 +39,11 @@ def tesseract_path() -> str | None:
     )
 
 
-def extract_text(executable: str, image: Path, language: str) -> str:
+def extract_layout(executable: str, image: Path, language: str, psm: str) -> str:
+    """Read one Tesseract layout, retaining only reasonably confident words."""
     result = subprocess.run(
-        [executable, str(image), "stdout", "-l", language, "--psm", "6", "tsv"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-        timeout=45,
+        [executable, str(image), "stdout", "-l", language, "--psm", psm, "tsv"],
+        capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=45,
     )
     if result.returncode:
         return ""
@@ -64,7 +61,16 @@ def extract_text(executable: str, image: Path, language: str) -> str:
         word = columns[11].strip()
         if confidence >= 55 and re.search(r"[A-Za-zÀ-ÿ0-9]", word):
             words.append(word)
-    value = " ".join(words)
+    return " ".join(words)
+
+
+def extract_text(executable: str, image: Path, language: str) -> str:
+    # PSM 6 works well for ordinary subtitles.  PSM 11 also detects isolated
+    # blocks such as a price, address or phone number in an Instagram story.
+    # Keep both layouts: they complement each other and make a saved image
+    # searchable even when it has no usable audio.
+    values = [extract_layout(executable, image, language, psm) for psm in ("6", "11")]
+    value = " ".join(dict.fromkeys(item for item in values if item))
     readable = [
         word for word in re.findall(r"[A-Za-zÀ-ÿ]{3,}", value)
         if re.search(r"[aeiouyàâäéèêëîïôöùûüÿ]", word, re.IGNORECASE)
