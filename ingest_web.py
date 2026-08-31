@@ -7,7 +7,7 @@ import hashlib
 import html
 import json
 import re
-import urllib.request
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,10 +33,21 @@ def section(source: str, pattern: str) -> str:
 
 
 def fetch(url: str) -> tuple[str, str]:
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Media Vault; personal archive)"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        source = response.read(2_000_000).decode(response.headers.get_content_charset() or "utf-8", errors="ignore")
-        return response.url, source
+    """Use Windows' network stack; Python's resolver is unavailable on this PC."""
+    result = subprocess.run(
+        [
+            "curl.exe", "--location", "--fail", "--silent", "--show-error",
+            "--max-time", "45",
+            "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+            "-H", "Accept-Language: fr-BE,fr;q=0.9,en;q=0.8",
+            url,
+        ],
+        capture_output=True,
+        timeout=55,
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr.decode("utf-8", errors="ignore") or "page inaccessible").strip()[:300])
+    return url, result.stdout.decode("utf-8", errors="ignore")
 
 
 def main() -> int:
