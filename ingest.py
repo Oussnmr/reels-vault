@@ -32,6 +32,9 @@ VAULT = Path.home() / "vault"          # modifiable avec --vault
 MODELE_WHISPER = "small"               # tiny / base / small / medium
 PAUSE_ENTRE_VIDEOS = 3                 # secondes, pour ne pas se faire bloquer
 NB_IMAGES = 3
+# Les Shorts/Reels sont transcrits en entier. Pour les vidéos YouTube longues,
+# le début suffit généralement à la recherche et évite de bloquer la file.
+LIMITE_TRANSCRIPTION_YOUTUBE_S = 5 * 60
 
 YTDLP = [sys.executable, "-m", "yt_dlp"]
 GALLERYDL = [sys.executable, "-m", "gallery_dl"]
@@ -139,12 +142,27 @@ def est_video(meta):
     )
 
 
-def telecharger_media(lien, dossier, nom, cookies):
+def limite_youtube_longue(lien, meta):
+    """Retourne la durée à analyser pour une longue vidéo YouTube, sinon 0."""
+    if "youtu" not in lien.lower() or "/shorts/" in lien.lower():
+        return 0
+    try:
+        duree = float(meta.get("duration") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return LIMITE_TRANSCRIPTION_YOUTUBE_S if duree > LIMITE_TRANSCRIPTION_YOUTUBE_S else 0
+
+
+def telecharger_media(lien, dossier, nom, cookies, limite_s=0):
     """Télécharge l'audio (m4a) et la vidéo en basse qualité (pour les images)."""
     audio = dossier / f"{nom}.m4a"
     video = dossier / f"{nom}.mp4"
 
     base = YTDLP + ["--no-warnings", "--quiet"] + options_cookies(cookies)
+    if limite_s:
+        # yt-dlp délègue le découpage à ffmpeg : on ne télécharge donc pas le
+        # reste d'une conférence ou d'un podcast de plusieurs heures.
+        base += ["--download-sections", f"*0-{limite_s}"]
 
     audio_resultat = subprocess.run(
         base + ["-f", "bestaudio", "-x", "--audio-format", "m4a",
@@ -257,7 +275,8 @@ def extraire_images(video, dossier_images, nom, duree):
     return chemins
 
 
-def ecrire_fiche(dossier, vault, nom, lien, meta, transcription, images, genre):
+def ecrire_fiche(dossier, vault, nom, lien, meta, transcription, images, genre,
+                 transcription_partielle=False):
     liens_images = []
     for p in images:
         try:
@@ -281,6 +300,7 @@ statut: brut
 {(meta.get("description") or "").strip() or "(vide)"}
 
 ## Transcription audio
+{"*(Transcription partielle : cinq premières minutes de la vidéo.)*" if transcription_partielle else ""}
 {transcription or "(pas d'audio exploitable)"}
 
 ## Images
@@ -342,8 +362,11 @@ def main():
             audio = video = None
             if est_video(meta):
                 genre = "video"
+                limite_s = limite_youtube_longue(lien, meta)
+                if limite_s:
+                    log(f"    vidéo YouTube longue : transcription limitée aux {limite_s // 60} premières minutes.")
                 audio, video = telecharger_media(lien, dossier_temp, nom,
-                                                 args.cookies)
+                                                 args.cookies, limite_s)
                 transcription = transcrire(audio, modele)
                 images = extraire_images(video, dossier_images, nom,
                                          meta.get("duration"))
@@ -361,7 +384,7 @@ def main():
                     meta["description"] = legende
 
             ecrire_fiche(dossier_raw, vault, nom, lien, meta, transcription,
-                         images, genre)
+                         images, genre, transcription_partielle=bool(limite_s) if genre == "video" else False)
 
             for fichier in (audio, video):
                 if fichier and fichier.exists():
