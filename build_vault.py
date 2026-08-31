@@ -52,6 +52,7 @@ def parse_markdown(path: Path) -> dict:
     transcription = section("Transcription audio")
     visual_text = section("Texte détecté à l'écran")
     visual_description = section("Description visuelle")
+    web_content = section("Contenu de la page")
     images_text = section("Images")
     images = [line[2:].strip() for line in images_text.splitlines() if line.strip().startswith("- ")]
 
@@ -59,7 +60,7 @@ def parse_markdown(path: Path) -> dict:
     platform = meta.get("plateforme", "")
     genre = meta.get("genre", "")
     author = meta.get("auteur", "")
-    searchable = " ".join([title, author, description, transcription, visual_text, visual_description]).lower()
+    searchable = " ".join([title, author, description, transcription, visual_text, visual_description, web_content]).lower()
 
     return {
         "id": path.stem,
@@ -73,6 +74,7 @@ def parse_markdown(path: Path) -> dict:
         "transcription": transcription,
         "visual_text": visual_text,
         "visual_description": visual_description,
+        "web_content": web_content,
         "images": images,
         "searchable": searchable,
     }
@@ -96,11 +98,11 @@ def render_markdown(items: list[dict]) -> str:
     often promotional and is not a reliable summary of the video.
     """
     lines = [
-        "# Vault Instagram",
+        "# Media Vault",
         "",
         f"Nombre d'éléments : {len(items)}",
         "",
-        "Index compact de contenus Instagram sauvegardés. Chaque entrée conserve le lien source.",
+        "Index compact de médias personnels : liens, vidéos, carrousels, images et pages web. Chaque entrée conserve sa source.",
         "",
     ]
     for item in items:
@@ -108,6 +110,7 @@ def render_markdown(items: list[dict]) -> str:
         transcription = compact_text(item.get("transcription", ""), 560)
         visual_text = compact_text(item.get("visual_text", ""), 420)
         visual_description = compact_text(item.get("visual_description", ""), 420)
+        web_content = compact_text(item.get("web_content", ""), 560)
         lines.append(f"## {item.get('title') or item.get('id')}")
         if item.get("author"):
             lines.append(f"- Auteur : {item['author']}")
@@ -125,6 +128,8 @@ def render_markdown(items: list[dict]) -> str:
             lines.append(f"- Texte à l'écran : {visual_text}")
         if visual_description:
             lines.append(f"- Description visuelle : {visual_description}")
+        if web_content:
+            lines.append(f"- Contenu de la page : {web_content}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -146,6 +151,7 @@ def shard_keywords(chunk: list[dict], limit: int = 36) -> list[str]:
             item.get("description", ""), item.get("transcription", ""),
             item.get("visual_text", ""),
             item.get("visual_description", ""),
+            item.get("web_content", ""),
         ]).lower()
         for word in re.findall(r"[\wÀ-ÿ'-]{4,}", text):
             word = word.strip("'-")
@@ -161,6 +167,7 @@ def lookup_words(item: dict) -> set[str]:
         item.get("description", ""), item.get("transcription", ""),
         item.get("visual_text", ""),
         item.get("visual_description", ""),
+        item.get("web_content", ""),
     ]).lower()
     found = set()
     for word in re.findall(r"[\wÀ-ÿ'-]{4,}", text):
@@ -199,6 +206,7 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 20) ->
             "transcription": compact_text(item.get("transcription", ""), 560),
             "visual_text": compact_text(item.get("visual_text", ""), 420),
             "visual_description": compact_text(item.get("visual_description", ""), 420),
+            "web_content": compact_text(item.get("web_content", ""), 560),
         })
     shards = []
     for number, start in enumerate(range(0, len(compact), shard_size), start=1):
@@ -248,11 +256,11 @@ def render_html(items: list[dict]) -> str:
     stat_text = " · ".join(f"{k}: {v}" for k, v in sorted(stats.items()))
     return f'''<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reels Vault</title>
+<title>Media Vault</title>
 <style>
 :root{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color-scheme:light dark}}body{{max-width:1000px;margin:auto;padding:24px}}h1{{margin-bottom:4px}}.muted{{opacity:.65}}input{{width:100%;box-sizing:border-box;font-size:18px;padding:14px;border-radius:12px;border:1px solid #888;margin:18px 0 10px}}.filters{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}}button{{padding:8px 12px;border-radius:999px;border:1px solid #888;cursor:pointer}}article{{border:1px solid #7776;border-radius:14px;padding:16px;margin:12px 0}}article h2{{margin:0 0 6px;font-size:19px}}.meta{{font-size:13px;opacity:.7;margin-bottom:8px}}.text{{white-space:pre-wrap;line-height:1.4}}a{{word-break:break-all}}#empty{{display:none;padding:30px 0;text-align:center;opacity:.65}}
 </style></head><body>
-<h1>Reels Vault</h1><div class="muted">{len(items)} éléments · {html.escape(stat_text)}</div>
+<h1>Media Vault</h1><div class="muted">{len(items)} éléments · {html.escape(stat_text)}</div>
 <input id="q" type="search" placeholder="Rechercher un lieu, restaurant, sujet, auteur…" autofocus>
 <div class="filters"><button data-kind="">Tous</button><button data-kind="video">Vidéos</button><button data-kind="carrousel">Carrousels</button></div>
 <div id="results"></div><div id="empty">Aucun résultat.</div>

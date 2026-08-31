@@ -198,11 +198,30 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     vault.mkdir(parents=True, exist_ok=True)
     inbox = resolve_inbox(args.file)
     before = inbox.read_text(encoding="utf-8", errors="ignore")
-    if not extract_urls(before):
-        print("Inbox vide : rien à traiter.")
+    urls = extract_urls(before)
+    media_dir = inbox.parent / "Media"
+    media_files = [
+        path for path in media_dir.glob("*")
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".mp4", ".mov", ".m4v", ".webm"}
+    ] if media_dir.exists() else []
+    if not urls and not media_files:
+        print("Inbox vide : aucun lien ou média à traiter.")
         return 0
 
-    ingest_file(inbox, vault, args.cookies, args.limit, args.model)
+    if urls:
+        ingest_file(inbox, vault, args.cookies, args.limit, args.model)
+        web_script = ROOT / "ingest_web.py"
+        if web_script.exists():
+            run_step(
+                "Archivage textuel des pages web",
+                [sys.executable, str(web_script), str(inbox), "--vault", str(vault)],
+            )
+    media_script = ROOT / "ingest_media.py"
+    if media_files and media_script.exists():
+        run_step(
+            "Ingestion des fichiers image et vidéo",
+            [sys.executable, str(media_script), "--inbox-dir", str(media_dir), "--vault", str(vault)],
+        )
     rebuild(vault, sync=not args.no_sync)
 
     if args.clear:

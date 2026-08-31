@@ -37,7 +37,7 @@ YTDLP = [sys.executable, "-m", "yt_dlp"]
 GALLERYDL = [sys.executable, "-m", "gallery_dl"]
 
 MOTIF_LIEN = re.compile(
-    r"https?://(?:www\.|vm\.|vt\.)?(?:tiktok\.com|instagram\.com)/[^\s\"'<>,\)\]]+"
+    r"https?://(?:www\.|vm\.|vt\.)?(?:tiktok\.com|instagram\.com|youtube\.com|youtu\.be)/[^\s\"'<>,\)\]]+"
 )
 
 
@@ -107,7 +107,12 @@ def identifiant(lien):
     """Un nom de fichier court et sûr, dérivé de l'URL."""
     fin = lien.rstrip("/").split("/")[-1].split("?")[0]
     fin = re.sub(r"[^A-Za-z0-9_-]", "", fin)[:40]
-    plateforme = "tiktok" if "tiktok" in lien else "insta"
+    if "tiktok" in lien:
+        plateforme = "tiktok"
+    elif "youtu" in lien:
+        plateforme = "youtube"
+    else:
+        plateforme = "insta"
     return f"{plateforme}_{fin or str(abs(hash(lien)))[:10]}"
 
 
@@ -262,7 +267,7 @@ def ecrire_fiche(dossier, vault, nom, lien, meta, transcription, images, genre):
 
     contenu = f"""---
 source: {lien}
-plateforme: {"TikTok" if "tiktok" in lien else "Instagram"}
+plateforme: {"TikTok" if "tiktok" in lien else "YouTube" if "youtu" in lien else "Instagram"}
 genre: {genre}
 auteur: {meta.get("uploader") or meta.get("channel") or "inconnu"}
 duree_s: {meta.get("duration") or ""}
