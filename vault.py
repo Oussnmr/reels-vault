@@ -205,8 +205,11 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         print("Inbox vide : aucun lien ou média à traiter.")
         return 0
 
-    if urls:
+    media_url_hosts = ("instagram.com", "tiktok.com", "youtube.com", "youtu.be")
+    social_urls = [url for url in urls if any(host in url.lower() for host in media_url_hosts)]
+    if social_urls:
         ingest_file(inbox, vault, args.cookies, args.limit, args.model)
+    if urls:
         web_script = ROOT / "ingest_web.py"
         if web_script.exists():
             run_step(
