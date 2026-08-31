@@ -25,6 +25,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 # ---------------------------------------------------------------- configuration
 
@@ -32,12 +33,15 @@ VAULT = Path.home() / "vault"          # modifiable avec --vault
 MODELE_WHISPER = "small"               # tiny / base / small / medium
 PAUSE_ENTRE_VIDEOS = 3                 # secondes, pour ne pas se faire bloquer
 NB_IMAGES = 3
+# Les Shorts/Reels sont transcrits en entier. Pour les vidéos YouTube longues,
+# le début suffit généralement à la recherche et évite de bloquer la file.
+LIMITE_TRANSCRIPTION_YOUTUBE_S = 5 * 60
 
 YTDLP = [sys.executable, "-m", "yt_dlp"]
 GALLERYDL = [sys.executable, "-m", "gallery_dl"]
 
 MOTIF_LIEN = re.compile(
-    r"https?://(?:www\.|vm\.|vt\.)?(?:tiktok\.com|instagram\.com)/[^\s\"'<>,\)\]]+"
+    r"https?://(?:www\.|vm\.|vt\.)?(?:tiktok\.com|instagram\.com|youtube\.com|youtu\.be)/[^\s\"'<>,\)\]]+"
 )
 
 
@@ -107,14 +111,20 @@ def identifiant(lien):
     """Un nom de fichier court et sûr, dérivé de l'URL."""
     fin = lien.rstrip("/").split("/")[-1].split("?")[0]
     fin = re.sub(r"[^A-Za-z0-9_-]", "", fin)[:40]
-    plateforme = "tiktok" if "tiktok" in lien else "insta"
+    if "tiktok" in lien:
+        plateforme = "tiktok"
+    elif "youtu" in lien:
+        plateforme = "youtube"
+    else:
+        plateforme = "insta"
     return f"{plateforme}_{fin or str(abs(hash(lien)))[:10]}"
 
 
 # ---------------------------------------------------------------- étapes
 
 def recuperer_metadonnees(lien, cookies):
-    commande = YTDLP + ["--dump-json", "--no-warnings", "--skip-download"]
+    commande = YTDLP + ["--dump-single-json", "--ignore-no-formats-error",
+                        "--no-warnings", "--skip-download"]
     commande += options_cookies(cookies)
     commande.append(lien)
     resultat = subprocess.run(commande, capture_output=True, text=True, timeout=120)
@@ -123,25 +133,61 @@ def recuperer_metadonnees(lien, cookies):
     return json.loads(resultat.stdout.splitlines()[0])
 
 
-def telecharger_media(lien, dossier, nom, cookies):
+def est_video(meta):
+    """Reconnaît une vidéo même si yt-dlp ne fournit plus sa durée."""
+    if meta.get("duration"):
+        return True
+    return any(
+        format_.get("vcodec") not in (None, "none")
+        for format_ in (meta.get("formats") or [])
+    )
+
+
+def limite_youtube_longue(lien, meta):
+    """Retourne la durée à analyser pour une longue vidéo YouTube, sinon 0."""
+    if "youtu" not in lien.lower() or "/shorts/" in lien.lower():
+        return 0
+    try:
+        duree = float(meta.get("duration") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return LIMITE_TRANSCRIPTION_YOUTUBE_S if duree > LIMITE_TRANSCRIPTION_YOUTUBE_S else 0
+
+
+def telecharger_media(lien, dossier, nom, cookies, limite_s=0):
     """Télécharge l'audio (m4a) et la vidéo en basse qualité (pour les images)."""
     audio = dossier / f"{nom}.m4a"
     video = dossier / f"{nom}.mp4"
 
-    base = YTDLP + ["--no-warnings", "--quiet"] + options_cookies(cookies)
+    # Une interruption peut laisser un téléchargement complet dans .temp.
+    # Il ne doit jamais être repris à la place d'un nouvel extrait limité.
+    for fichier in (audio, video):
+        if fichier.exists():
+            fichier.unlink()
 
-    subprocess.run(
+    base = YTDLP + ["--no-warnings", "--quiet"] + options_cookies(cookies)
+    if limite_s:
+        # yt-dlp délègue le découpage à ffmpeg : on ne télécharge donc pas le
+        # reste d'une conférence ou d'un podcast de plusieurs heures.
+        base += ["--download-sections", f"*0-{limite_s}"]
+
+    audio_resultat = subprocess.run(
         base + ["-f", "bestaudio", "-x", "--audio-format", "m4a",
                 "-o", str(dossier / f"{nom}.%(ext)s"), lien],
-        capture_output=True, timeout=300,
+        capture_output=True, text=True, timeout=300,
     )
-    subprocess.run(
+    video_resultat = subprocess.run(
         base + ["-f", "worstvideo[height>=480]/worst",
                 "-o", str(video), lien],
-        capture_output=True, timeout=300,
+        capture_output=True, text=True, timeout=300,
     )
-    return (audio if audio.exists() else None,
-            video if video.exists() else None)
+    audio = audio if audio.exists() else None
+    video = video if video.exists() else None
+    if audio is None and video is None:
+        details = (audio_resultat.stderr or video_resultat.stderr or
+                   "yt-dlp n'a produit aucun fichier").strip()
+        raise RuntimeError(details[:300])
+    return audio, video
 
 
 def transcrire(audio, modele):
@@ -149,6 +195,47 @@ def transcrire(audio, modele):
         return ""
     segments, _ = modele.transcribe(str(audio), vad_filter=True)
     return " ".join(s.text.strip() for s in segments).strip()
+
+
+def fallback_tiktok_oembed(lien, dossier_images, nom):
+    """Crée une fiche TikTok minimale lorsque le défi anti-bot bloque yt-dlp.
+
+    L'endpoint oEmbed de TikTok fournit un titre, l'auteur, l'URL canonique et
+    une miniature publique. La fiche reste donc retrouvable même sans l'audio.
+    """
+    endpoint = f"https://www.tiktok.com/oembed?url={quote(lien, safe='')}"
+    resultat = subprocess.run(
+        ["curl.exe", "--location", "--fail", "--silent", "--show-error", "--max-time", "30", endpoint],
+        capture_output=True, timeout=40,
+    )
+    if resultat.returncode:
+        raise RuntimeError((resultat.stderr.decode("utf-8", errors="ignore") or "oEmbed TikTok inaccessible").strip()[:300])
+    donnees = json.loads(resultat.stdout.decode("utf-8", errors="ignore"))
+    titre = (donnees.get("title") or "TikTok sans titre").strip()
+    auteur = (donnees.get("author_name") or "inconnu").strip()
+    canonique = ""
+    html_embed = donnees.get("html") or ""
+    match = re.search(r'cite=["\']([^"\']+)', html_embed)
+    if match:
+        canonique = match.group(1)
+
+    meta = {
+        "title": titre,
+        "uploader": auteur,
+        "description": "TikTok archivé via son aperçu public. "
+                       + (f"Lien canonique : {canonique}" if canonique else ""),
+    }
+    images = []
+    miniature = donnees.get("thumbnail_url")
+    if miniature:
+        sortie = dossier_images / f"{nom}_1.jpg"
+        image_resultat = subprocess.run(
+            ["curl.exe", "--location", "--fail", "--silent", "--show-error", "--max-time", "45", "-o", str(sortie), miniature],
+            capture_output=True, timeout=55,
+        )
+        if image_resultat.returncode == 0 and sortie.exists() and sortie.stat().st_size > 0:
+            images.append(sortie)
+    return meta, images
 
 
 def telecharger_carrousel(lien, dossier_images, nom, cookies):
@@ -164,12 +251,35 @@ def telecharger_carrousel(lien, dossier_images, nom, cookies):
     commande = GALLERYDL + ["--write-metadata", "-D", str(cible)]
     commande += options_cookies(cookies)
     commande.append(lien)
-    subprocess.run(commande, capture_output=True, timeout=300)
+    resultat_gallery = subprocess.run(
+        commande, capture_output=True, text=True, timeout=300,
+    )
 
     images = sorted(
         p for p in cible.glob("*")
         if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
     )
+
+    # Les posts publics exposent encore leurs images à yt-dlp même quand
+    # l'API utilisée par gallery-dl redirige vers la page de connexion.
+    if not images:
+        commande_fallback = YTDLP + [
+            "--ignore-no-formats-error", "--skip-download", "--write-thumbnail",
+            "--no-warnings", "--quiet",
+        ] + options_cookies(cookies) + [
+            "-o", str(cible / f"{nom}_%(playlist_index)s.%(ext)s"), lien,
+        ]
+        resultat_fallback = subprocess.run(
+            commande_fallback, capture_output=True, text=True, timeout=300,
+        )
+        images = sorted(
+            p for p in cible.glob("*")
+            if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+        )
+        if not images:
+            details = (resultat_gallery.stderr or resultat_fallback.stderr or
+                       "aucune image produite").strip()
+            raise RuntimeError(f"téléchargement du carrousel impossible : {details[:240]}")
 
     legende = ""
     for fichier_meta in sorted(cible.glob("*.json")):
@@ -186,8 +296,18 @@ def telecharger_carrousel(lien, dossier_images, nom, cookies):
 
 def extraire_images(video, dossier_images, nom, duree):
     """Prend NB_IMAGES captures réparties dans la vidéo."""
-    if video is None or not duree:
+    if video is None:
         return []
+    if not duree:
+        resultat = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
+            capture_output=True, text=True, timeout=30,
+        )
+        try:
+            duree = float(resultat.stdout.strip())
+        except (TypeError, ValueError):
+            return []
     chemins = []
     for i in range(NB_IMAGES):
         instant = duree * (i + 1) / (NB_IMAGES + 1)
@@ -203,7 +323,8 @@ def extraire_images(video, dossier_images, nom, duree):
     return chemins
 
 
-def ecrire_fiche(dossier, vault, nom, lien, meta, transcription, images, genre):
+def ecrire_fiche(dossier, vault, nom, lien, meta, transcription, images, genre,
+                 transcription_partielle=False):
     liens_images = []
     for p in images:
         try:
@@ -213,7 +334,7 @@ def ecrire_fiche(dossier, vault, nom, lien, meta, transcription, images, genre):
 
     contenu = f"""---
 source: {lien}
-plateforme: {"TikTok" if "tiktok" in lien else "Instagram"}
+plateforme: {"TikTok" if "tiktok" in lien else "YouTube" if "youtu" in lien else "Instagram"}
 genre: {genre}
 auteur: {meta.get("uploader") or meta.get("channel") or "inconnu"}
 duree_s: {meta.get("duration") or ""}
@@ -227,6 +348,7 @@ statut: brut
 {(meta.get("description") or "").strip() or "(vide)"}
 
 ## Transcription audio
+{"*(Transcription partielle : cinq premières minutes de la vidéo.)*" if transcription_partielle else ""}
 {transcription or "(pas d'audio exploitable)"}
 
 ## Images
@@ -286,10 +408,13 @@ def main():
                 erreur_meta = str(e).replace("\n", " ")[:300]
 
             audio = video = None
-            if meta.get("duration"):
+            if est_video(meta):
                 genre = "video"
+                limite_s = limite_youtube_longue(lien, meta)
+                if limite_s:
+                    log(f"    vidéo YouTube longue : transcription limitée aux {limite_s // 60} premières minutes.")
                 audio, video = telecharger_media(lien, dossier_temp, nom,
-                                                 args.cookies)
+                                                 args.cookies, limite_s)
                 transcription = transcrire(audio, modele)
                 images = extraire_images(video, dossier_images, nom,
                                          meta.get("duration"))
@@ -307,7 +432,7 @@ def main():
                     meta["description"] = legende
 
             ecrire_fiche(dossier_raw, vault, nom, lien, meta, transcription,
-                         images, genre)
+                         images, genre, transcription_partielle=bool(limite_s) if genre == "video" else False)
 
             for fichier in (audio, video):
                 if fichier and fichier.exists():
@@ -316,9 +441,25 @@ def main():
             journal[lien] = {"statut": "ok", "fiche": f"{nom}.md"}
             reussites += 1
         except Exception as erreur:  # noqa: BLE001 — on continue quoi qu'il arrive
-            log(f"    échec : {erreur}")
-            journal[lien] = {"statut": "echec", "erreur": str(erreur)[:300]}
-            echecs += 1
+            if "tiktok" in lien.lower():
+                try:
+                    meta, images = fallback_tiktok_oembed(lien, dossier_images, nom)
+                    ecrire_fiche(
+                        dossier_raw, vault, nom, lien, meta,
+                        "(TikTok a bloqué le téléchargement audio ; aperçu public archivé.)",
+                        images, "video",
+                    )
+                    journal[lien] = {"statut": "ok", "fiche": f"{nom}.md", "mode": "oembed"}
+                    log("    TikTok bloqué par l'anti-bot : fiche d'aperçu public créée.")
+                    reussites += 1
+                except Exception as fallback_error:  # noqa: BLE001
+                    log(f"    échec : {erreur} | secours TikTok : {fallback_error}")
+                    journal[lien] = {"statut": "echec", "erreur": str(fallback_error)[:300]}
+                    echecs += 1
+            else:
+                log(f"    échec : {erreur}")
+                journal[lien] = {"statut": "echec", "erreur": str(erreur)[:300]}
+                echecs += 1
 
         sauver_journal(chemin_journal, journal)
         time.sleep(PAUSE_ENTRE_VIDEOS)
