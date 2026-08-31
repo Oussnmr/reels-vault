@@ -103,6 +103,12 @@ def sync_github_index(vault: Path, quiet_if_missing: bool = True) -> bool:
 
 
 def rebuild(vault: Path, sync: bool = True) -> None:
+    ocr_script = ROOT / "enrich_visual_ocr.py"
+    if ocr_script.exists():
+        run_step(
+            "Lecture du texte affiché dans les Reels sans audio",
+            [sys.executable, str(ocr_script), "--vault", str(vault)],
+        )
     run_step(
         "Reconstruction de l'interface de recherche",
         [sys.executable, str(ROOT / "build_vault.py"), "--vault", str(vault)],
