@@ -158,6 +158,12 @@ def telecharger_media(lien, dossier, nom, cookies, limite_s=0):
     audio = dossier / f"{nom}.m4a"
     video = dossier / f"{nom}.mp4"
 
+    # Une interruption peut laisser un téléchargement complet dans .temp.
+    # Il ne doit jamais être repris à la place d'un nouvel extrait limité.
+    for fichier in (audio, video):
+        if fichier.exists():
+            fichier.unlink()
+
     base = YTDLP + ["--no-warnings", "--quiet"] + options_cookies(cookies)
     if limite_s:
         # yt-dlp délègue le découpage à ffmpeg : on ne télécharge donc pas le
