@@ -191,12 +191,42 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 20) ->
         old.unlink()
     for old in search_dir.glob("terms_*.json"):
         old.unlink()
+    detail_dir = search_dir / "details"
+    detail_dir.mkdir(parents=True, exist_ok=True)
+    # Detail records are fully generated from raw/*.md, so stale records must
+    # disappear when a source item is removed or renamed.
+    for old in detail_dir.glob("*.json"):
+        old.unlink()
     compact = []
     for item in items:
+        detail_file = f"details/{item.get('id', '')}.json"
+        detail = {
+            "version": 1,
+            "id": item.get("id", ""),
+            "title": item.get("title", ""),
+            "source": item.get("source", ""),
+            "platform": item.get("platform", ""),
+            "genre": item.get("genre", ""),
+            "author": item.get("author", ""),
+            "date": item.get("date", ""),
+            "description": item.get("description", ""),
+            "transcription": item.get("transcription", ""),
+            "visual_text": item.get("visual_text", ""),
+            "visual_description": item.get("visual_description", ""),
+            "web_content": item.get("web_content", ""),
+            # Captures are retained locally; their OCR/description above is
+            # what the remote GPT can reliably use through GitHub.
+            "image_references": item.get("images", []),
+        }
+        (detail_dir / f"{item.get('id', '')}.json").write_text(
+            json.dumps(detail, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         compact.append({
             "id": item.get("id", ""),
+            "detail": detail_file,
             "title": compact_text(item.get("title", ""), 160),
             "source": item.get("source", ""),
+            "platform": item.get("platform", ""),
             "author": compact_text(item.get("author", ""), 100),
             "date": item.get("date", ""),
             "genre": item.get("genre", ""),
@@ -244,7 +274,8 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 20) ->
         )
         term_files.append(filename)
     (search_dir / "manifest.json").write_text(
-        json.dumps({"version": 3, "count": len(compact), "shard_size": shard_size,
+        json.dumps({"version": 4, "count": len(compact), "shard_size": shard_size,
+                    "detail_directory": "details", "detail_record": "details/<id>.json",
                     "term_files": term_files, "shards": shards}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
