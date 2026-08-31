@@ -16,6 +16,7 @@ import argparse
 import html
 import json
 import re
+import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -87,8 +88,8 @@ def compact_text(value: str, limit: int = 700) -> str:
 def render_markdown(items: list[dict]) -> str:
     """Compact index optimized for retrieval by ChatGPT/OneDrive.
 
-    Prefer description, then transcription. Do not include image paths or the
-    redundant searchable field to keep context usage low.
+    Keep the caption and the audio transcription distinct. A caption alone is
+    often promotional and is not a reliable summary of the video.
     """
     lines = [
         "# Vault Instagram",
@@ -99,7 +100,8 @@ def render_markdown(items: list[dict]) -> str:
         "",
     ]
     for item in items:
-        summary = compact_text(item.get("description", "")) or compact_text(item.get("transcription", ""))
+        description = compact_text(item.get("description", ""), 240)
+        transcription = compact_text(item.get("transcription", ""), 560)
         lines.append(f"## {item.get('title') or item.get('id')}")
         if item.get("author"):
             lines.append(f"- Auteur : {item['author']}")
@@ -109,13 +111,53 @@ def render_markdown(items: list[dict]) -> str:
             lines.append(f"- Traité le : {item['date']}")
         if item.get("source"):
             lines.append(f"- Source : {item['source']}")
-        if summary:
-            lines.append(f"- Contenu : {summary}")
+        if transcription:
+            lines.append(f"- Transcription audio : {transcription}")
+        if description:
+            lines.append(f"- Description Instagram : {description}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_search_index(items: list[dict], vault: Path, shard_size: int = 32) -> None:
+SEARCH_STOP_WORDS = {
+    "avec", "aussi", "dans", "dont", "elle", "elles", "entre", "être", "faire",
+    "from", "have", "just", "mais", "more", "pour", "plus", "pourquoi", "quel",
+    "quoi", "that", "this", "tout", "tous", "une", "vous", "with", "your",
+    "the", "and", "des", "les", "que", "qui", "est", "sur", "pas", "par",
+}
+
+
+def shard_keywords(chunk: list[dict], limit: int = 36) -> list[str]:
+    """Return lightweight routing hints, not a replacement for the transcripts."""
+    words = Counter()
+    for item in chunk:
+        text = " ".join([
+            item.get("title", ""), item.get("author", ""),
+            item.get("description", ""), item.get("transcription", ""),
+        ]).lower()
+        for word in re.findall(r"[\wÀ-ÿ'-]{4,}", text):
+            word = word.strip("'-")
+            if word and word not in SEARCH_STOP_WORDS and not word.isdigit():
+                words[word] += 1
+    return [word for word, _count in words.most_common(limit)]
+
+
+def lookup_words(item: dict) -> set[str]:
+    """Normalise meaningful words used to route a GPT query to a small shard."""
+    text = " ".join([
+        item.get("title", ""), item.get("author", ""),
+        item.get("description", ""), item.get("transcription", ""),
+    ]).lower()
+    found = set()
+    for word in re.findall(r"[\wÀ-ÿ'-]{4,}", text):
+        word = unicodedata.normalize("NFKD", word).encode("ascii", "ignore").decode("ascii")
+        word = re.sub(r"[^a-z0-9]", "", word)
+        if word and word not in SEARCH_STOP_WORDS and not word.isdigit():
+            found.add(word)
+    return found
+
+
+def render_search_index(items: list[dict], vault: Path, shard_size: int = 20) -> None:
     """Write small, read-only shards for remote GPT retrieval.
 
     The complete vault_data.json remains available locally, while the GPT
@@ -126,6 +168,8 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 32) ->
     # Remove only generated shard files; preserve no user-authored files here.
     for old in search_dir.glob("shard_*.json"):
         old.unlink()
+    for old in search_dir.glob("terms_*.json"):
+        old.unlink()
     compact = []
     for item in items:
         compact.append({
@@ -135,8 +179,10 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 32) ->
             "author": compact_text(item.get("author", ""), 100),
             "date": item.get("date", ""),
             "genre": item.get("genre", ""),
-            "text": compact_text(item.get("description", ""), 260)
-                    or compact_text(item.get("transcription", ""), 420),
+            # Keep these separate: a caption is not a transcription. The GPT
+            # can therefore summarise what was actually said in the video.
+            "description": compact_text(item.get("description", ""), 240),
+            "transcription": compact_text(item.get("transcription", ""), 560),
         })
     shards = []
     for number, start in enumerate(range(0, len(compact), shard_size), start=1):
@@ -152,10 +198,30 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 32) ->
             "count": len(chunk),
             "first_title": titles[0] if titles else "",
             "last_title": titles[-1] if titles else "",
+            "keywords": shard_keywords(chunk),
         })
+
+    # A full searchable index would again be too large for a GPT action.
+    # Instead, one tiny terms_<letter>.json file maps exact query words to the
+    # shard(s) that contain them. The GPT fetches only the needed term file.
+    routes: dict[str, dict[str, set[str]]] = {}
+    for position, item in enumerate(items):
+        filename = f"shard_{position // shard_size + 1:03d}.json"
+        for word in lookup_words(item):
+            bucket = word[0] if "a" <= word[0] <= "z" else "other"
+            routes.setdefault(bucket, {}).setdefault(word, set()).add(filename)
+    term_files = []
+    for bucket, words in sorted(routes.items()):
+        filename = f"terms_{bucket}.json"
+        payload = {word: sorted(files) for word, files in sorted(words.items())}
+        (search_dir / filename).write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        term_files.append(filename)
     (search_dir / "manifest.json").write_text(
-        json.dumps({"version": 1, "count": len(compact), "shard_size": shard_size,
-                    "shards": shards}, ensure_ascii=False, indent=2),
+        json.dumps({"version": 3, "count": len(compact), "shard_size": shard_size,
+                    "term_files": term_files, "shards": shards}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
