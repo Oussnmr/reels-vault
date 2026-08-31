@@ -51,6 +51,7 @@ def parse_markdown(path: Path) -> dict:
     description = section("Description")
     transcription = section("Transcription audio")
     visual_text = section("Texte détecté à l'écran")
+    visual_description = section("Description visuelle")
     images_text = section("Images")
     images = [line[2:].strip() for line in images_text.splitlines() if line.strip().startswith("- ")]
 
@@ -58,7 +59,7 @@ def parse_markdown(path: Path) -> dict:
     platform = meta.get("plateforme", "")
     genre = meta.get("genre", "")
     author = meta.get("auteur", "")
-    searchable = " ".join([title, author, description, transcription, visual_text]).lower()
+    searchable = " ".join([title, author, description, transcription, visual_text, visual_description]).lower()
 
     return {
         "id": path.stem,
@@ -71,6 +72,7 @@ def parse_markdown(path: Path) -> dict:
         "description": description,
         "transcription": transcription,
         "visual_text": visual_text,
+        "visual_description": visual_description,
         "images": images,
         "searchable": searchable,
     }
@@ -105,6 +107,7 @@ def render_markdown(items: list[dict]) -> str:
         description = compact_text(item.get("description", ""), 240)
         transcription = compact_text(item.get("transcription", ""), 560)
         visual_text = compact_text(item.get("visual_text", ""), 420)
+        visual_description = compact_text(item.get("visual_description", ""), 420)
         lines.append(f"## {item.get('title') or item.get('id')}")
         if item.get("author"):
             lines.append(f"- Auteur : {item['author']}")
@@ -120,6 +123,8 @@ def render_markdown(items: list[dict]) -> str:
             lines.append(f"- Description Instagram : {description}")
         if visual_text:
             lines.append(f"- Texte à l'écran : {visual_text}")
+        if visual_description:
+            lines.append(f"- Description visuelle : {visual_description}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -140,6 +145,7 @@ def shard_keywords(chunk: list[dict], limit: int = 36) -> list[str]:
             item.get("title", ""), item.get("author", ""),
             item.get("description", ""), item.get("transcription", ""),
             item.get("visual_text", ""),
+            item.get("visual_description", ""),
         ]).lower()
         for word in re.findall(r"[\wÀ-ÿ'-]{4,}", text):
             word = word.strip("'-")
@@ -154,6 +160,7 @@ def lookup_words(item: dict) -> set[str]:
         item.get("title", ""), item.get("author", ""),
         item.get("description", ""), item.get("transcription", ""),
         item.get("visual_text", ""),
+        item.get("visual_description", ""),
     ]).lower()
     found = set()
     for word in re.findall(r"[\wÀ-ÿ'-]{4,}", text):
@@ -191,6 +198,7 @@ def render_search_index(items: list[dict], vault: Path, shard_size: int = 20) ->
             "description": compact_text(item.get("description", ""), 240),
             "transcription": compact_text(item.get("transcription", ""), 560),
             "visual_text": compact_text(item.get("visual_text", ""), 420),
+            "visual_description": compact_text(item.get("visual_description", ""), 420),
         })
     shards = []
     for number, start in enumerate(range(0, len(compact), shard_size), start=1):
