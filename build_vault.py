@@ -115,6 +115,51 @@ def render_markdown(items: list[dict]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_search_index(items: list[dict], vault: Path, shard_size: int = 32) -> None:
+    """Write small, read-only shards for remote GPT retrieval.
+
+    The complete vault_data.json remains available locally, while the GPT
+    action reads only compact shards so a single response stays below limits.
+    """
+    search_dir = vault / "vault_search"
+    search_dir.mkdir(parents=True, exist_ok=True)
+    # Remove only generated shard files; preserve no user-authored files here.
+    for old in search_dir.glob("shard_*.json"):
+        old.unlink()
+    compact = []
+    for item in items:
+        compact.append({
+            "id": item.get("id", ""),
+            "title": compact_text(item.get("title", ""), 160),
+            "source": item.get("source", ""),
+            "author": compact_text(item.get("author", ""), 100),
+            "date": item.get("date", ""),
+            "genre": item.get("genre", ""),
+            "text": compact_text(item.get("description", ""), 260)
+                    or compact_text(item.get("transcription", ""), 420),
+        })
+    shards = []
+    for number, start in enumerate(range(0, len(compact), shard_size), start=1):
+        chunk = compact[start:start + shard_size]
+        filename = f"shard_{number:03d}.json"
+        (search_dir / filename).write_text(
+            json.dumps(chunk, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        titles = [x["title"] for x in chunk if x["title"]]
+        shards.append({
+            "file": filename,
+            "count": len(chunk),
+            "first_title": titles[0] if titles else "",
+            "last_title": titles[-1] if titles else "",
+        })
+    (search_dir / "manifest.json").write_text(
+        json.dumps({"version": 1, "count": len(compact), "shard_size": shard_size,
+                    "shards": shards}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def render_html(items: list[dict]) -> str:
     data = json.dumps(items, ensure_ascii=False).replace("</", "<\\/")
     stats = Counter(i.get("genre") or "autre" for i in items)
@@ -154,6 +199,7 @@ def main() -> int:
     json_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
     html_path.write_text(render_html(items), encoding="utf-8")
     md_path.write_text(render_markdown(items), encoding="utf-8")
+    render_search_index(items, vault)
 
     print(f"Vault généré : {len(items)} éléments")
     print(f"Interface : {html_path}")
