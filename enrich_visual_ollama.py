@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-MODEL = "qwen2.5vl:3b"
+MODEL = "qwen3-vl:4b"
 EMPTY = {"", "(vide)", "(pas d'audio exploitable)", "(aucune)"}
 
 
@@ -63,7 +63,11 @@ def analyse(images: list[Path]) -> str:
             data = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise RuntimeError(f"Ollama indisponible : {error}") from error
-    return re.sub(r"\s+", " ", data.get("response", "")).strip()
+    summary = re.sub(r"\s+", " ", data.get("response", "")).strip()
+    # A model can exceptionally emit punctuation-only noise. Never make that
+    # searchable context, and leave the entry eligible for a later retry.
+    words = re.findall(r"[A-Za-zÀ-ÿ0-9']+", summary)
+    return summary if len(words) >= 3 and len("".join(words)) >= 12 else ""
 
 
 def model_available() -> bool:
