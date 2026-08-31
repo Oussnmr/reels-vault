@@ -13,10 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_VAULT = Path.home() / "Vault"
-URL_RE = re.compile(
-    r"https?://(?:www\.|vm\.|vt\.)?(?:tiktok\.com|instagram\.com)/[^\s\"'<>,\)\]]+",
-    re.IGNORECASE,
-)
+URL_RE = re.compile(r"https?://[^\s\"'<>,\)\]]+", re.IGNORECASE)
 
 
 def run_step(label: str, command: list[str]) -> None:
